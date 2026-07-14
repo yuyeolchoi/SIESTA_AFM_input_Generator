@@ -1,0 +1,27 @@
+SystemName          CuO AFM demonstration
+SystemLabel         cuo
+NumberOfAtoms       4
+NumberOfSpecies     2
+LatticeConstant     1.0 Ang
+
+%block ChemicalSpeciesLabel
+  1  29  Cu
+  2   8  O
+%endblock ChemicalSpeciesLabel
+
+%block LatticeVectors
+  4.0 0.0 0.0
+  0.0 4.0 0.0
+  0.0 0.0 8.0
+%endblock LatticeVectors
+
+AtomicCoordinatesFormat Fractional
+%block AtomicCoordinatesAndAtomicSpecies
+  0.00 0.00 0.25  1 Cu1
+  0.50 0.50 0.25  2 O1
+  0.00 0.00 0.75  1 Cu2
+  0.50 0.50 0.75  2 O2
+%endblock AtomicCoordinatesAndAtomicSpecies
+
+SpinPolarized false
+

@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "siesta-afm"
+version = "0.1.0"
+description = "Generate and validate SIESTA DM.InitSpin antiferromagnetic initial states"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "siesta-afm contributors"}]
+dependencies = [
+  "ase>=3.22",
+  "numpy>=1.24",
+  "networkx>=3.0",
+]
+
+[project.optional-dependencies]
+oxidation = ["pymatgen>=2024.1"]
+plot = ["matplotlib>=3.7"]
+gui = ["streamlit>=1.32", "matplotlib>=3.7"]
+yaml = ["PyYAML>=6.0"]
+test = ["pytest>=8.0", "matplotlib>=3.7"]
+
+[project.scripts]
+siesta-afm = "siesta_afm.cli:main"
+siesta-afm-gui = "siesta_afm.gui:main"
+
+[tool.setuptools.packages.find]
+include = ["siesta_afm*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

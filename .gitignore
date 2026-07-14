@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+build/
+dist/
+afm_spin.fdf
+input_afm.fdf
+afm_pattern.png
+analysis.json
+

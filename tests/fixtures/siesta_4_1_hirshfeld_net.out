@@ -1,0 +1,11 @@
+siesta: E_KS(eV) =       -654.125000
+siesta: Total spin polarization (Qup-Qdown) =    0.100000
+
+Hirshfeld Net Atomic Populations:
+Atom #   dQatom  Atom pop      S [e]  Species
+     1  -0.11000   7.11000    3.65000  Mn
+     2   0.11000   6.89000   -3.55000  Mn
+------------------------------------------------
+ Total                         0.10000
+
+SCF cycle converged after 27 iterations

@@ -1,0 +1,22 @@
+siesta: E_KS(eV) =       -875.250000
+siesta: Total spin polarization (Qup-Qdown) =    1.000000
+
+Mulliken Atomic Populations:
+Atom #   charge [q] valence [e]      Sz [e]  Species
+     1     0.100000    7.900000    3.900000  Fe
+     2    -0.100000    8.100000   -3.800000  Fe
+-----------------------------------------------------
+ Total     0.000000                0.100000
+
+siesta: E_KS(eV) =       -876.500000
+siesta: Total spin polarization (Qup-Qdown) =    0.250000
+
+Hirshfeld Atomic Populations:
+Atom #   dQatom  Atom pop     Sz [e]  Species
+     1  -0.12000   8.12000    3.75000  Fe
+     2   0.12000   7.88000   -0.05000  Fe
+------------------------------------------------
+ Total                         3.70000
+
+SCF cycle converged after 22 iterations
+Geometry converged

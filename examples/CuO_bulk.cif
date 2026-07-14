@@ -1,0 +1,24 @@
+data_CuO_tenorite_demo
+_audit_creation_method 'siesta-afm example; literature-like unrelaxed coordinates'
+_cell_length_a 4.684
+_cell_length_b 3.423
+_cell_length_c 5.129
+_cell_angle_alpha 90
+_cell_angle_beta 99.54
+_cell_angle_gamma 90
+_symmetry_space_group_name_H-M 'P 1'
+loop_
+_atom_site_label
+_atom_site_type_symbol
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+Cu1 Cu 0.2500 0.2500 0.0000
+Cu2 Cu 0.7500 0.7500 0.0000
+Cu3 Cu 0.7500 0.2500 0.5000
+Cu4 Cu 0.2500 0.7500 0.5000
+O1  O  0.0000 0.4160 0.2500
+O2  O  0.0000 0.5840 0.7500
+O3  O  0.5000 0.9160 0.2500
+O4  O  0.5000 0.0840 0.7500
+
