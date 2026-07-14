@@ -1,6 +1,9 @@
+from pathlib import Path
+
 import numpy as np
 import pytest
 
+from siesta_afm.io import read_structure
 from siesta_afm.neighbors import build_neighbor_graph
 from siesta_afm.ordering import (
     NonBipartiteError,
@@ -18,6 +21,9 @@ from siesta_afm.ordering import (
 )
 from siesta_afm.structure import Structure
 from siesta_afm.workflows import generate_assignment
+
+
+ROOT = Path(__file__).parents[1]
 
 
 def make_structure(points, pbc=(False, False, False)) -> Structure:
@@ -289,3 +295,81 @@ def test_random_ordering_is_seeded_and_warns_about_physical_meaning() -> None:
     assert first.signs == repeated.signs
     assert first.signs != different.signs
     assert "not a physical" in "\n".join(first.warnings)
+
+
+def _rocksalt_nio_conventional_cell() -> Structure:
+    lattice_constant = 4.17
+    nickel = [
+        [0.0, 0.0, 0.0],
+        [0.0, 0.5, 0.5],
+        [0.5, 0.0, 0.5],
+        [0.5, 0.5, 0.0],
+    ]
+    oxygen = [
+        [0.5, 0.0, 0.0],
+        [0.0, 0.5, 0.0],
+        [0.0, 0.0, 0.5],
+        [0.5, 0.5, 0.5],
+    ]
+    fractional = np.asarray([*nickel, *oxygen])
+    cell = np.eye(3) * lattice_constant
+    return Structure(
+        ["Ni"] * 4 + ["O"] * 4,
+        fractional @ cell,
+        cell,
+        (True, True, True),
+    )
+
+
+def _repeat_structure(structure: Structure, repeats: tuple[int, int, int]) -> Structure:
+    symbols: list[str] = []
+    positions: list[np.ndarray] = []
+    for shift in np.ndindex(repeats):
+        translation = np.asarray(shift, dtype=float) @ structure.cell
+        symbols.extend(structure.symbols)
+        positions.extend(position + translation for position in structure.positions)
+    cell = np.asarray(structure.cell) * np.asarray(repeats)[:, None]
+    return Structure(symbols, positions, cell, structure.pbc)
+
+
+@pytest.mark.parametrize("repeats", [(1, 1, 1), (2, 2, 2)])
+def test_rocksalt_nio_coordination_counts_all_periodic_images(
+    repeats: tuple[int, int, int],
+) -> None:
+    atoms = _repeat_structure(_rocksalt_nio_conventional_cell(), repeats)
+    nickel_indices = [
+        index for index, symbol in enumerate(atoms.symbols) if symbol == "Ni"
+    ]
+    result = coordination_ordering(atoms, nickel_indices, anion_species=["O"])
+    assert set(result.metadata["coordination_numbers"].values()) == {6}
+    assert len(result.signs) == 4 * int(np.prod(repeats))
+
+
+def test_direction_layer_warns_that_periodic_wrap_is_not_merged() -> None:
+    atoms = make_structure(
+        [[0, 0, 0], [2.5, 2.5, 2.5], [5, 5, 5]],
+        pbc=(True, True, False),
+    )
+    result = direction_layer_ordering(atoms, range(3), [1, 1, 1], tolerance=0.1)
+    assert "boundary" in "\n".join(result.warnings)
+    assert "not merged" in "\n".join(result.warnings)
+
+
+def test_restored_nico_demo_reports_nonspinel_coordination() -> None:
+    path = ROOT / "examples" / "NiCo2O4_311_slab.cif"
+    assert "multicomponent demonstration" in path.read_text(encoding="utf-8")
+    atoms = read_structure(path, slab=True)
+    magnetic_indices = [
+        index for index, symbol in enumerate(atoms.symbols) if symbol in {"Ni", "Co"}
+    ]
+    magnetic_positions = atoms.positions[magnetic_indices]
+    separations = [
+        np.linalg.norm(magnetic_positions[right] - magnetic_positions[left])
+        for left in range(len(magnetic_positions))
+        for right in range(left + 1, len(magnetic_positions))
+    ]
+    assert min(separations) > 2.0
+    with pytest.raises(ValueError, match=r"atom 1 \(Ni, CN=1\).+CN=2"):
+        coordination_ordering(
+            atoms, magnetic_indices, anion_species=["O"]
+        )

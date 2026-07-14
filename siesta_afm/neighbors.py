@@ -84,8 +84,21 @@ def cross_pair_distances(
     structure: Structure,
     left_indices: Sequence[int],
     right_indices: Sequence[int],
+    *,
+    all_images: bool = False,
+    cutoff: float | None = None,
 ) -> list[PairDistance]:
-    """Return minimum-image distances between two atom-index groups."""
+    """Return distances between two atom-index groups.
+
+    The default preserves the usual one-minimum-image-per-pair behavior.
+    ``all_images=True`` returns every periodic image considered, which is
+    required for coordination numbers because distinct images of one basis
+    atom can be separate ligands.  With a cutoff, the image search range is
+    expanded far enough to include every image inside that radius.
+    """
+
+    if cutoff is not None and cutoff <= 0:
+        raise ValueError("image-distance cutoff must be positive")
 
     pairs: list[PairDistance] = []
     seen: set[tuple[int, int]] = set()
@@ -94,11 +107,68 @@ def cross_pair_distances(
             if i == j or (i, j) in seen:
                 continue
             seen.add((i, j))
-            vector = minimum_image_vector(structure, i, j)
-            distance = float(np.linalg.norm(vector))
-            if distance > 1e-10:
-                pairs.append(PairDistance(i, j, distance, vector))
+            vectors = (
+                _periodic_image_vectors(structure, i, j, cutoff=cutoff)
+                if all_images
+                else [minimum_image_vector(structure, i, j)]
+            )
+            for vector in vectors:
+                distance = float(np.linalg.norm(vector))
+                if distance > 1e-10 and (cutoff is None or distance <= cutoff + 1e-9):
+                    pairs.append(PairDistance(i, j, distance, vector))
     return sorted(pairs, key=lambda pair: (pair.distance, pair.i, pair.j))
+
+
+def _periodic_image_vectors(
+    structure: Structure,
+    i: int,
+    j: int,
+    *,
+    cutoff: float | None,
+) -> list[np.ndarray]:
+    direct = structure.positions[j] - structure.positions[i]
+    if not any(structure.pbc):
+        return [direct]
+    if abs(float(np.linalg.det(structure.cell))) < 1e-12:
+        raise ValueError("periodic distances require a nonsingular cell")
+    fractional = np.linalg.solve(structure.cell.T, direct)
+    if cutoff is None:
+        radii = (1, 1, 1)
+    else:
+        # For v = (fractional + shift) @ cell and |v| <= cutoff,
+        # each fractional component is bounded by the corresponding reciprocal
+        # basis-vector norm.  The extra half covers rounding to the nearest
+        # image center.
+        inverse = np.linalg.inv(structure.cell)
+        bounds = cutoff * np.linalg.norm(inverse, axis=0)
+        radii = tuple(max(1, int(np.ceil(bound + 0.5))) for bound in bounds)
+    choices: list[Sequence[int]] = []
+    for axis, (value, periodic) in enumerate(zip(fractional, structure.pbc)):
+        if periodic:
+            center = int(np.rint(-value))
+            radius = radii[axis]
+            choices.append(range(center - radius, center + radius + 1))
+        else:
+            choices.append((0,))
+    return [
+        direct + np.asarray(shift, dtype=float) @ structure.cell
+        for shift in product(*choices)
+    ]
+
+
+def count_anion_neighbors(
+    structure: Structure,
+    index: int,
+    anion_indices: Sequence[int],
+    cutoff: float,
+) -> int:
+    """Count all anion periodic images within ``cutoff`` of one atom."""
+
+    return len(
+        cross_pair_distances(
+            structure, [index], anion_indices, all_images=True, cutoff=cutoff
+        )
+    )
 
 
 def distance_shells(

@@ -188,11 +188,14 @@ def coordination_ordering(
             f"anion species overlaps magnetic atom {overlap[0] + 1}; choose distinct "
             "magnetic and anion species"
         )
-    pairs = cross_pair_distances(structure, indices, anion_indices)
-    if not pairs:
-        raise ValueError("no finite magnetic-anion distances were found")
     site_cutoffs: dict[int, float] = {}
-    if anion_cutoff is None or str(anion_cutoff).lower() == "auto":
+    automatic = anion_cutoff is None or str(anion_cutoff).lower() == "auto"
+    if automatic:
+        pairs = cross_pair_distances(
+            structure, indices, anion_indices, all_images=True
+        )
+        if not pairs:
+            raise ValueError("no finite magnetic-anion distances were found")
         # Distorted spinels commonly have different Td-O and Oh-O bond
         # lengths.  Resolve the first shell per magnetic site so the shorter
         # sublattice's second shell is not mistaken for a bond while the
@@ -212,6 +215,13 @@ def coordination_ordering(
         if resolved <= 0:
             raise ValueError("anion cutoff must be positive")
         site_cutoffs = {index: resolved for index in indices}
+        pairs = cross_pair_distances(
+            structure,
+            indices,
+            anion_indices,
+            all_images=True,
+            cutoff=resolved,
+        )
     coordinations = {index: 0 for index in indices}
     for pair in pairs:
         if pair.distance <= site_cutoffs[pair.i] + 1e-9:
@@ -378,13 +388,22 @@ def direction_layer_ordering(
         for layer_number, layer in enumerate(layers)
         for index in layer
     }
-    periodic = all(
+    fully_periodic_direction = all(
         structure.pbc[axis]
         for axis, component in enumerate(vector)
         if abs(component) > 1e-12
     )
+    has_periodic_component = any(
+        structure.pbc[axis] and abs(component) > 1e-12
+        for axis, component in enumerate(vector)
+    )
     warnings: list[str] = []
-    if periodic and len(layers) % 2:
+    if has_periodic_component:
+        warnings.append(
+            "layers crossing a periodic cell boundary are not merged for an "
+            "arbitrary layer direction"
+        )
+    if fully_periodic_direction and len(layers) % 2:
         warnings.append(
             f"periodic layer direction contains {len(layers)} magnetic layers; the "
             "odd layer count may break alternating AFM order across a PBC boundary"

@@ -5,6 +5,7 @@ from siesta_afm.neighbors import (
     PairDistance,
     automatic_cutoff,
     build_neighbor_graph,
+    count_anion_neighbors,
     minimum_image_vector,
 )
 from siesta_afm.structure import Structure
@@ -79,3 +80,13 @@ def test_automatic_cutoff_selects_requested_shell() -> None:
     ]
     assert np.isclose(automatic_cutoff(pairs, shell=1), 1.51)
     assert automatic_cutoff(pairs, shell=2) > 2.02
+
+
+def test_coordination_image_search_expands_beyond_adjacent_cells() -> None:
+    atoms = Structure(
+        ["Ni", "O"],
+        [[0, 0, 0], [0.4, 0, 0]],
+        np.eye(3),
+        (True, False, False),
+    )
+    assert count_anion_neighbors(atoms, 0, [1], cutoff=1.61) == 4

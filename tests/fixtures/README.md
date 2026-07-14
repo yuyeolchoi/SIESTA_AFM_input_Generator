@@ -16,3 +16,7 @@ the test suite.
 
 The fixtures include more than one energy/spin/table occurrence where useful,
 so tests verify that the final reported state is selected.
+
+`inverse_spinel_coordination.cif` is a deliberately synthetic, test-only
+geometry for exercising GUI coordination/moment routing. Its distances are not
+physical and it must not be copied into `examples/` or used as a research model.

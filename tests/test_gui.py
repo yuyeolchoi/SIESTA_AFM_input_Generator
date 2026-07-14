@@ -68,7 +68,7 @@ def test_gui_exposes_f9_methods_and_propagation_preset() -> None:
 def test_gui_controller_runs_inverse_spinel_coordination_method() -> None:
     result = gui.run_generation(
         gui.GenerationParams(
-            structure_path=ROOT / "examples" / "NiCo2O4_311_slab.cif",
+            structure_path=ROOT / "tests" / "fixtures" / "inverse_spinel_coordination.cif",
             magnetic_species=("Ni", "Co"),
             method="by-coordination",
             moment="Ni@6=1.0 Co@4=2.0 Co@6=0.5",
