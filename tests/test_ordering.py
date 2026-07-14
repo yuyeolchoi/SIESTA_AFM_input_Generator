@@ -13,6 +13,7 @@ from siesta_afm.ordering import (
     coordination_ordering,
     detect_layers,
     direction_layer_ordering,
+    graph_coloring_ordering,
     layer_ordering,
     neighbor_bipartite_ordering,
     manual_groups_ordering,
@@ -91,6 +92,8 @@ def test_checkerboard_uses_in_plane_neighbors_per_layer() -> None:
     assert result.signs[0] != result.signs[1]
     assert result.signs[0] != result.signs[2]
     assert result.signs[4] != result.signs[5]
+    assert result.metadata["component_sizes"] == [4, 4]
+    assert "relative spin signs" in "\n".join(result.warnings).lower()
 
 
 def test_checkerboard_normal_tolerance_is_configurable() -> None:
@@ -132,14 +135,16 @@ def test_propagation_vector_warns_with_one_based_node_indices() -> None:
     assert "input cell" in warning and "supercell" in warning
 
 
-def test_periodic_odd_layers_warn_but_slab_normal_does_not() -> None:
+def test_periodic_and_nonperiodic_odd_layers_report_distinct_warnings() -> None:
     points = [[0, 0, 1], [0, 0, 4], [0, 0, 7]]
     periodic = make_structure(points, pbc=(False, False, True))
     slab = make_structure(points, pbc=(True, True, False))
     assert "odd layer count" in "\n".join(
         layer_ordering(periodic, range(3), axis="z").warnings
     )
-    assert not layer_ordering(slab, range(3), axis="z").warnings
+    slab_warning = "\n".join(layer_ordering(slab, range(3), axis="z").warnings)
+    assert "uncompensated AFM slab" in slab_warning
+    assert "net initial moment is nonzero" in slab_warning
 
 
 def test_periodic_boundary_layers_merge_and_share_sign() -> None:
@@ -373,3 +378,168 @@ def test_restored_nico_demo_reports_nonspinel_coordination() -> None:
         coordination_ordering(
             atoms, magnetic_indices, anion_species=["O"]
         )
+
+
+def test_cuo_slab_disconnected_graph_warns_with_component_sizes() -> None:
+    atoms = read_structure(ROOT / "examples" / "CuO_111_slab.cif", slab=True)
+    indices = [index for index, symbol in enumerate(atoms.symbols) if symbol == "Cu"]
+    result = neighbor_bipartite_ordering(atoms, indices, cutoff="auto")
+    assert result.metadata["component_sizes"] == [2, 2, 2]
+    warning = "\n".join(result.warnings)
+    assert "3 disconnected components" in warning
+    assert "sizes:" in warning
+    assert "no physical meaning" in warning
+    assert "--neighbor-cutoff" in warning
+
+
+def test_connected_neighbor_graph_has_no_component_warning() -> None:
+    atoms = make_structure([[0, 0, 0], [1, 0, 0], [2, 0, 0]])
+    result = neighbor_bipartite_ordering(atoms, range(3), cutoff=1.01)
+    assert result.metadata["component_sizes"] == [3]
+    assert "disconnected components" not in "\n".join(result.warnings)
+
+
+def test_frustrated_disconnected_graph_keeps_component_warning() -> None:
+    root3 = np.sqrt(3.0)
+    atoms = make_structure(
+        [[0, 0, 0], [1, 0, 0], [0.5, root3 / 2, 0], [5, 0, 0], [6, 0, 0]]
+    )
+    result = neighbor_bipartite_ordering(
+        atoms, range(5), cutoff=1.01, allow_frustrated=True
+    )
+    assert result.metadata["component_sizes"] == [3, 2]
+    warning = "\n".join(result.warnings)
+    assert "disconnected components" in warning
+    assert "heuristic initial state" in warning
+
+
+def test_co3o4_example_has_tetrahedral_and_octahedral_coordination() -> None:
+    atoms = read_structure(ROOT / "examples" / "Co3O4_spinel_COD1538531.cif")
+    indices = [index for index, symbol in enumerate(atoms.symbols) if symbol == "Co"]
+    result = coordination_ordering(atoms, indices, anion_species=["O"])
+    coordination_numbers = list(result.metadata["coordination_numbers"].values())
+    assert {value: coordination_numbers.count(value) for value in {4, 6}} == {
+        4: 8,
+        6: 16,
+    }
+
+
+def test_graph_coloring_triangle_uses_three_colors_and_default_spins() -> None:
+    root3 = np.sqrt(3.0)
+    atoms = make_structure([[0, 0, 0], [1, 0, 0], [0.5, root3 / 2, 0]])
+    result = graph_coloring_ordering(atoms, range(3), cutoff=1.01)
+    assert result.metadata["n_colors"] == 3
+    assert set(result.metadata["colors"].values()) == {0, 1, 2}
+    assert result.metadata["color_spin_map"] == {0: 1, 1: -1, 2: 0}
+    assert result.metadata["strategy"] == "DSATUR"
+    assert result.signs == {0: 1, 1: -1, 2: 0}
+    warning = "\n".join(result.warnings)
+    assert "proper graph coloring" in warning
+    assert "does not minimize magnetic energy" in warning
+    assert "max-cut" in warning
+
+
+def test_graph_coloring_k4_uses_four_color_default_mapping() -> None:
+    root3 = np.sqrt(3.0)
+    root_two_thirds = np.sqrt(2.0 / 3.0)
+    atoms = make_structure(
+        [
+            [0, 0, 0],
+            [1, 0, 0],
+            [0.5, root3 / 2, 0],
+            [0.5, root3 / 6, root_two_thirds],
+        ]
+    )
+    result = graph_coloring_ordering(atoms, range(4), cutoff=1.01)
+    assert result.metadata["n_colors"] == 4
+    assert result.metadata["color_spin_map"] == {0: 1, 1: -1, 2: 1, 3: -1}
+    assert result.metadata["strategy"] == "DSATUR"
+
+
+def test_graph_coloring_bipartite_fallback_matches_neighbor_method() -> None:
+    atoms = make_structure([[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0]])
+    colored = graph_coloring_ordering(atoms, range(4), cutoff=1.01, seed=7)
+    bipartite = neighbor_bipartite_ordering(atoms, range(4), cutoff=1.01)
+    assert colored.signs == bipartite.signs
+    assert colored.metadata["strategy"] == "bipartite fallback"
+
+
+def test_graph_coloring_disconnected_graph_warns_about_relative_signs() -> None:
+    root3 = np.sqrt(3.0)
+    atoms = make_structure(
+        [[0, 0, 0], [1, 0, 0], [0.5, root3 / 2, 0], [5, 0, 0], [6, 0, 0]]
+    )
+    result = graph_coloring_ordering(atoms, range(5), cutoff=1.01)
+    assert result.metadata["component_sizes"] == [3, 2]
+    warning = "\n".join(result.warnings)
+    assert "2 disconnected components" in warning
+    assert "no physical meaning" in warning
+
+
+def test_graph_coloring_rejects_spin_map_length_and_color_limit() -> None:
+    root3 = np.sqrt(3.0)
+    atoms = make_structure([[0, 0, 0], [1, 0, 0], [0.5, root3 / 2, 0]])
+    with pytest.raises(ValueError, match="length 2 does not match 3"):
+        graph_coloring_ordering(
+            atoms, range(3), cutoff=1.01, color_spins="+1,-1"
+        )
+    with pytest.raises(ValueError, match="exceeding --max-colors 2"):
+        graph_coloring_ordering(atoms, range(3), cutoff=1.01, max_colors=2)
+
+
+def test_graph_coloring_seed_varies_color_spin_permutations() -> None:
+    root3 = np.sqrt(3.0)
+    atoms = make_structure([[0, 0, 0], [1, 0, 0], [0.5, root3 / 2, 0]])
+    first = graph_coloring_ordering(atoms, range(3), cutoff=1.01, seed=0)
+    second = graph_coloring_ordering(atoms, range(3), cutoff=1.01, seed=1)
+    assert first.metadata["colors"] == second.metadata["colors"]
+    assert first.signs != second.signs
+
+
+def test_graph_coloring_balance_minimizes_net_moment() -> None:
+    root3 = np.sqrt(3.0)
+    atoms = make_structure(
+        [[0, 0, 0], [1, 0, 0], [0.5, root3 / 2, 0], [-1, 0, 0]]
+    )
+    magnitudes = {0: 10.0, 1: 1.0, 2: 1.0, 3: 1.0}
+    balanced = graph_coloring_ordering(
+        atoms,
+        range(4),
+        cutoff=1.01,
+        balance_colors=True,
+        magnitudes=magnitudes,
+    )
+    net_moment = sum(
+        balanced.signs[index] * magnitude
+        for index, magnitude in magnitudes.items()
+    )
+    assert abs(net_moment) == pytest.approx(1.0)
+    assert balanced.signs[0] == 0
+    assert balanced.metadata["balance_colors"] is True
+    assert balanced.metadata["balance_metric"] == "moment"
+
+
+def test_graph_coloring_workflow_balances_resolved_element_moments() -> None:
+    root3 = np.sqrt(3.0)
+    atoms = Structure(
+        ["Fe", "Co", "Ni", "Co"],
+        np.asarray([[0, 0, 0], [1, 0, 0], [0.5, root3 / 2, 0], [-1, 0, 0]]),
+        np.eye(3) * 10,
+        (False, False, False),
+    )
+    _, assignment, spins = generate_assignment(
+        atoms,
+        ["Fe", "Co", "Ni"],
+        "graph-coloring",
+        ["Fe=10", "Co=1", "Ni=1"],
+        cutoff=1.01,
+        balance_colors=True,
+    )
+    assert assignment.signs[0] == 0
+    assert abs(sum(spins.values())) == pytest.approx(1.0)
+
+
+def test_nonperiodic_direction_odd_layers_warn_uncompensated_slab() -> None:
+    atoms = make_structure([[0, 0, 0], [1, 1, 1], [2, 2, 2]])
+    result = direction_layer_ordering(atoms, range(3), [1, 1, 1], tolerance=0.1)
+    assert "uncompensated AFM slab" in "\n".join(result.warnings)

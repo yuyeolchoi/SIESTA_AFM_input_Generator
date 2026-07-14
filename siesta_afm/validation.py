@@ -10,7 +10,12 @@ import networkx as nx
 
 from .io import parse_dm_init_spin
 from .neighbors import build_neighbor_graph, shell_summary
-from .ordering import detect_direction_layers, detect_layers
+from .ordering import (
+    detect_direction_layers,
+    detect_layers,
+    disconnected_component_warning,
+    graph_component_sizes,
+)
 from .structure import Structure
 
 
@@ -27,6 +32,7 @@ class ValidationReport:
     graph_nodes: int | None = None
     graph_edges: int | None = None
     connected_components: int | None = None
+    component_sizes: list[int] | None = None
     layer_spin_distribution: list[dict[str, int]] | None = None
 
     @property
@@ -93,6 +99,10 @@ def validate_spins(
         report.graph_nodes = graph.number_of_nodes()
         report.graph_edges = graph.number_of_edges()
         report.connected_components = nx.number_connected_components(graph)
+        report.component_sizes = graph_component_sizes(graph)
+        component_warning = disconnected_component_warning(report.component_sizes)
+        if component_warning:
+            report.warnings.append(component_warning)
         if graph.number_of_edges():
             opposite = sum(
                 valid_zero_based[left] * valid_zero_based[right] < 0
@@ -147,6 +157,11 @@ def analyze_structure(
     graph, resolved, pairs = build_neighbor_graph(
         structure, magnetic_indices, cutoff, neighbor_shell=neighbor_shell
     )
+    component_sizes = graph_component_sizes(graph)
+    warnings: list[str] = []
+    component_warning = disconnected_component_warning(component_sizes)
+    if component_warning:
+        warnings.append(component_warning)
     if layer_direction is None:
         layers = detect_layers(
             structure,
@@ -173,10 +188,12 @@ def analyze_structure(
         "graph_nodes": graph.number_of_nodes(),
         "graph_edges": graph.number_of_edges(),
         "connected_components": nx.number_connected_components(graph),
+        "component_sizes": component_sizes,
         "bipartite": nx.is_bipartite(graph),
         "axis": layer_label,
         "detected_layers": len(layers),
         "atoms_per_layer": [len(layer) for layer in layers],
+        "warnings": warnings,
     }
 
 
@@ -195,11 +212,14 @@ def format_analysis(report: dict[str, object]) -> str:
             f"Graph nodes: {report['graph_nodes']}",
             f"Graph edges: {report['graph_edges']}",
             f"Connected components: {report['connected_components']}",
+            "Component sizes: "
+            + ", ".join(str(value) for value in report["component_sizes"]),
             f"Bipartite: {report['bipartite']}",
             f"Detected layers along {report['axis']}: {report['detected_layers']}",
             "Atoms per layer: " + ", ".join(str(v) for v in report["atoms_per_layer"]),
         ]
     )
+    lines.extend(f"WARNING: {warning}" for warning in report.get("warnings", []))
     return "\n".join(lines)
 
 

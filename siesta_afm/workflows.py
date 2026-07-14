@@ -12,6 +12,7 @@ from .ordering import (
     checkerboard_ordering,
     coordination_ordering,
     direction_layer_ordering,
+    graph_coloring_ordering,
     layer_ordering,
     manual_groups_ordering,
     neighbor_bipartite_ordering,
@@ -53,6 +54,9 @@ def generate_assignment(
     up_coordination: Sequence[int] = (6,),
     down_coordination: Sequence[int] = (4,),
     coordination_tolerance: int = 0,
+    max_colors: int = 4,
+    color_spins: str | Sequence[int] | None = None,
+    balance_colors: bool = False,
     seed: int = 0,
 ) -> tuple[list[int], SpinAssignment, dict[int, float]]:
     indices = select_magnetic_sites(
@@ -61,6 +65,7 @@ def generate_assignment(
         exclude_atoms=exclude_atoms,
         adsorbate_indices=adsorbate_indices,
     )
+    resolved_magnitudes: dict[int, float] | None = None
     if method == "alternating-index":
         assignment = alternating_index(indices)
     elif method == "random":
@@ -107,6 +112,24 @@ def generate_assignment(
             plane=plane,
             cutoff=cutoff,
             normal_tolerance=layer_tolerance,
+        )
+    elif method == "graph-coloring":
+        resolved_magnitudes = resolve_moments(
+            structure,
+            indices,
+            moment,
+            site_moment_file=site_moment_file,
+        )
+        assignment = graph_coloring_ordering(
+            structure,
+            indices,
+            cutoff=cutoff,
+            neighbor_shell=neighbor_shell,
+            max_colors=max_colors,
+            color_spins=color_spins,
+            balance_colors=balance_colors,
+            magnitudes=resolved_magnitudes,
+            seed=seed,
         )
     elif method in {"neighbor-bipartite", "frustrated"}:
         assignment = neighbor_bipartite_ordering(
@@ -164,11 +187,12 @@ def generate_assignment(
         if method == "by-coordination"
         else None
     )
-    magnitudes = resolve_moments(
-        structure,
-        indices,
-        moment,
-        site_moment_file=site_moment_file,
-        coordinations=coordinations if isinstance(coordinations, dict) else None,
-    )
-    return indices, assignment, assignment.moments(magnitudes)
+    if resolved_magnitudes is None:
+        resolved_magnitudes = resolve_moments(
+            structure,
+            indices,
+            moment,
+            site_moment_file=site_moment_file,
+            coordinations=coordinations if isinstance(coordinations, dict) else None,
+        )
+    return indices, assignment, assignment.moments(resolved_magnitudes)

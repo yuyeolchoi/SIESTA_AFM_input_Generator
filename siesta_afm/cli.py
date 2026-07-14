@@ -37,6 +37,7 @@ METHODS = [
     "layer",
     "checkerboard",
     "neighbor-bipartite",
+    "graph-coloring",
     "propagation-vector",
     "manual-groups",
     "by-species",
@@ -173,6 +174,16 @@ def _add_ordering_controls(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--up-coordination", type=int, nargs="+", default=[6])
     parser.add_argument("--down-coordination", type=int, nargs="+", default=[4])
     parser.add_argument("--coordination-tolerance", type=int, default=0)
+    parser.add_argument("--max-colors", type=int, default=4)
+    parser.add_argument(
+        "--color-spins",
+        help='comma-separated color mapping, e.g. "+1,-1,0"',
+    )
+    parser.add_argument(
+        "--balance-colors",
+        action="store_true",
+        help="permute the color-spin map to minimize absolute net initial moment",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -194,7 +205,10 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--method", choices=METHODS, required=True)
     _add_ordering_controls(generate)
     generate.add_argument(
-        "--seed", type=int, default=0, help="random-method seed (default: 0)"
+        "--seed",
+        type=int,
+        default=0,
+        help="random seed or graph-coloring permutation index (default: 0)",
     )
     generate.add_argument("--output")
     generate.add_argument("--write-zero-spins", action="store_true")
@@ -328,6 +342,9 @@ def _workflow_kwargs(args: argparse.Namespace) -> dict[str, Any]:
         "up_coordination": args.up_coordination,
         "down_coordination": args.down_coordination,
         "coordination_tolerance": args.coordination_tolerance,
+        "max_colors": args.max_colors,
+        "color_spins": args.color_spins,
+        "balance_colors": args.balance_colors,
     }
 
 
@@ -520,6 +537,7 @@ def _cmd_enumerate(args: argparse.Namespace) -> int:
     seen: set[tuple[int, ...]] = set()
     manifest: list[dict[str, object]] = []
     failures: list[str] = []
+    notices: list[str] = []
     max_attempts = max(args.n_configs * 20, len(methods))
     for attempt in range(max_attempts):
         if len(manifest) >= args.n_configs:
@@ -553,7 +571,7 @@ def _cmd_enumerate(args: argparse.Namespace) -> int:
             continue
         score = (
             sum(
-                assignment.signs[left] != assignment.signs[right]
+                assignment.signs[left] * assignment.signs[right] < 0
                 for left, right in graph.edges
             )
             / graph.number_of_edges()
@@ -581,6 +599,9 @@ def _cmd_enumerate(args: argparse.Namespace) -> int:
                 "file": file_name,
             }
         )
+        for warning in assignment.warnings:
+            if warning not in notices:
+                notices.append(warning)
     if not manifest:
         detail = "\n".join(failures) if failures else "no distinct patterns"
         raise ValueError(f"no AFM configurations could be generated:\n{detail}")
@@ -590,6 +611,8 @@ def _cmd_enumerate(args: argparse.Namespace) -> int:
         writer = csv.DictWriter(handle, fieldnames=list(manifest[0]))
         writer.writeheader()
         writer.writerows(manifest)
+    for warning in notices:
+        print(f"WARNING:\n{warning}", file=sys.stderr)
     print(f"Generated {len(manifest)} distinct configuration(s) in {output_dir}")
     for failure in failures:
         print(f"WARNING: skipped {failure}", file=sys.stderr)

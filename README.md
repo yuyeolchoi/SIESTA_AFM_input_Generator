@@ -63,6 +63,7 @@ siesta-afm patch examples/input.fdf \
 - `layer`: `--axis` 방향 좌표를 `--layer-tolerance`로 묶고 층마다 부호를 교대합니다.
 - `checkerboard`: `--plane xy|xz|yz` 평면 최근접 그래프를 이분 색칠합니다.
 - `neighbor-bipartite`: PBC 최소 이미지 최근접 그래프를 만들고 두 sublattice를 색칠합니다.
+- `graph-coloring`: DSATUR proper coloring으로 최대 k개 부격자 후보를 만들고 색별 collinear spin을 매핑합니다.
 - `propagation-vector`: `sign(cos(2π q·r + phase))`로 부호를 정합니다.
 - `manual-groups`: `--up-atoms`, `--down-atoms` 또는 YAML `--group-file`을 사용합니다.
 - `by-species`: 서로 다른 원소 sublattice를 `--up-species`와 `--down-species`로 나눕니다.
@@ -98,11 +99,20 @@ siesta-afm generate spinel.cif \
   --anion-species O \
   --up-coordination 6 --down-coordination 4 \
   --moment Fe@6=4.0 Fe@4=3.0
+
+siesta-afm generate examples/Co3O4_spinel_COD1538531.cif \
+  --magnetic-species Co \
+  --method by-coordination \
+  --moment Co@4=3.0 Co@6=0.5
 ```
 
 `--moment 0.5`는 모든 선택 원소에 같은 크기를 쓰고, `--moment Cu=0.5 Ni=1.0`은 원소별 값을 씁니다. `Element@CN=value`는 같은 원소의 서로 다른 배위 환경을 구분합니다. 적용 우선순위는 site CSV > `Element@CN` > `Element` > 전역 값입니다. `--site-moment-file moments.csv`의 CSV에는 최소 `atom_index,moment` 열이 필요하고, 선택적으로 `element,oxidation_state` 열을 둘 수 있습니다.
 
 `by-species`의 up/down 합집합은 `--magnetic-species`와 정확히 같아야 합니다. 이 방법은 Ni/Co처럼 원소가 다른 sublattice에는 적합하지만, 같은 원소가 Td와 Oh 자리를 모두 차지하는 inverse spinel은 구분하지 못하므로 `by-coordination`을 사용해야 합니다. `by-coordination`은 O, S, Se, Te, N, F, Cl 중 구조에 하나만 존재하면 anion을 자동 감지하며, 여러 후보가 있으면 `--anion-species`를 요구합니다. 같은 basis anion의 서로 다른 주기 이미지도 각각 별도 이웃으로 세며, 기본 분류는 up CN=6, down CN=4입니다. `--anion-cutoff`, `--coordination-tolerance`로 판정을 조정할 수 있습니다.
+
+Co₃O₄ 예제는 [COD 1538531](https://www.crystallography.net/cod/1538531.html)
+(Roth, 1964)의 퍼블릭 도메인 구조 데이터를 사용합니다. Co 배위수 분포는 Td CN=4가 8개,
+Oh CN=6이 16개입니다.
 
 Propagation vector의 q는 입력 cell의 fractional 좌표입니다. supercell에서는 같은 물리적 주기를 나타내도록 q를 축소해야 합니다. A/C/G preset은 각각 `--afm-type A`, `C`, `G`로 선택하며, 사용자 `--q-vector`와 동시에 쓸 수 없습니다. NiO의 (111) AFM-II처럼 축과 평행하지 않은 층은 `--method layer --layer-direction 1 1 1`로 생성합니다.
 
@@ -136,6 +146,21 @@ moments:
 `--allow-frustrated`는 반대 부호 edge 수를 늘리는 반복 Max-Cut 휴리스틱을 명시적으로 허용합니다. 이 결과에는 다음 과학적 경고가 기록됩니다.
 
 > The generated spin assignment is a heuristic initial state for a frustrated magnetic network. It is not guaranteed to represent the experimental magnetic ground state.
+
+그래프가 둘 이상의 connected component로 끊기면 각 성분 내부의 교대 부호만 그래프로
+결정됩니다. 성분 사이 상대 부호는 최소 원자 인덱스를 기준으로 한 결정론적 관례일 뿐
+물리적 의미가 없습니다. 이때 프로그램은 성분 수와 크기를 경고하며, 층간 초교환을
+포함하도록 `--neighbor-cutoff`를 조정하거나 `layer`/`propagation-vector` 방법을
+검토하라고 안내합니다. 비주기 방향에 홀수 자기층을 가진 layer 슬랩은 오류가 아니라
+비보상 AFM 슬랩이라는 정보성 경고를 냅니다.
+
+`graph-coloring`은 비이분 그래프에 DSATUR를 적용하는 다부격자 초기 후보 생성기입니다.
+`--max-colors` 기본값은 4이며, `--color-spins "+1,-1,0"`으로 색별 부호를 지정하거나
+`--balance-colors`로 `--moment`·원소별 moment·site moment 파일에서 해석한 실제 초기
+moment 합의 절대값이 가장 작은 색-부호 순열을 선택할 수 있습니다.
+proper coloring은 인접 원자의 동색을 피할 뿐 에너지를 최소화하지 않습니다. frustrated
+격자의 collinear 에너지 후보가 목적이면 `--allow-frustrated` max-cut이 더 적합합니다.
+`enumerate`에서는 attempt seed에 따라 색-spin 순열을 바꿔 후보를 다양화합니다.
 
 ## 분석과 검증
 

@@ -1,3 +1,4 @@
+import csv
 from pathlib import Path
 
 import pytest
@@ -206,3 +207,98 @@ def test_layer_axis_and_direction_are_mutually_exclusive() -> None:
                 "1",
             ]
         )
+
+
+def _write_triangle_xyz(path: Path) -> None:
+    root3 = 3.0**0.5
+    path.write_text(
+        "3\ntriangular Cu graph\n"
+        "Cu 0.0 0.0 0.0\n"
+        "Cu 1.0 0.0 0.0\n"
+        f"Cu 0.5 {root3 / 2:.12f} 0.0\n",
+        encoding="utf-8",
+    )
+
+
+def test_graph_coloring_cli_reports_warning_and_mapping_errors(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    structure = tmp_path / "triangle.xyz"
+    _write_triangle_xyz(structure)
+    output = tmp_path / "colored.fdf"
+    code = main(
+        [
+            "generate",
+            str(structure),
+            "--magnetic-species",
+            "Cu",
+            "--method",
+            "graph-coloring",
+            "--moment",
+            "1",
+            "--cutoff",
+            "1.01",
+            "--output",
+            str(output),
+        ]
+    )
+    assert code == 0
+    assert {spin for _, spin in parse_dm_init_spin(output)} == {-1.0, 0.0, 1.0}
+    assert "does not minimize magnetic energy" in capsys.readouterr().err
+
+    code = main(
+        [
+            "generate",
+            str(structure),
+            "--magnetic-species",
+            "Cu",
+            "--method",
+            "graph-coloring",
+            "--moment",
+            "1",
+            "--cutoff",
+            "1.01",
+            "--color-spins",
+            "+1,-1",
+        ]
+    )
+    assert code == 2
+    assert "does not match 3 graph colors" in capsys.readouterr().err
+
+
+def test_enumerate_graph_coloring_varies_color_spin_permutation(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    structure = tmp_path / "triangle.xyz"
+    _write_triangle_xyz(structure)
+    output = tmp_path / "configs"
+    assert (
+        main(
+            [
+                "enumerate",
+                str(structure),
+                "--magnetic-species",
+                "Cu",
+                "--moment",
+                "1",
+                "--methods",
+                "graph-coloring",
+                "--cutoff",
+                "1.01",
+                "--n-configs",
+                "2",
+                "--output-dir",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    patterns = {
+        tuple(spin for _, spin in parse_dm_init_spin(path))
+        for path in output.glob("afm_*.fdf")
+    }
+    assert len(patterns) >= 2
+    with (output / "manifest.csv").open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert all(float(row["afm_score"]) == pytest.approx(1 / 3) for row in rows)
+    assert "does not minimize magnetic energy" in capsys.readouterr().err

@@ -41,3 +41,19 @@ def test_afm_score_is_computed() -> None:
     )
     assert report.valid
     assert report.antiparallel_fraction == 1.0
+
+
+def test_validation_reports_disconnected_component_reliability_warning() -> None:
+    structure = Structure(
+        ["Cu"] * 4,
+        [[0, 0, 0], [1, 0, 0], [5, 0, 0], [6, 0, 0]],
+        np.eye(3) * 10,
+        (False, False, False),
+    )
+    report = validate_spins(
+        [(1, 0.5), (2, -0.5), (3, 0.5), (4, -0.5)],
+        structure=structure,
+        cutoff=1.01,
+    )
+    assert report.component_sizes == [2, 2]
+    assert "no physical meaning" in "\n".join(report.warnings)

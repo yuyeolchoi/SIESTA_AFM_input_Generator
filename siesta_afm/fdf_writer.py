@@ -43,10 +43,14 @@ def render_dm_init_spin(
         ("down_species", "Down species"),
         ("up_coordination", "Up coordination"),
         ("down_coordination", "Down coordination"),
+        ("strategy", "Coloring strategy"),
+        ("n_colors", "Graph colors"),
+        ("color_spin_map", "Color spin map"),
+        ("component_sizes", "Graph component sizes"),
         ("afm_type", "AFM type"),
         ("q_vector", "Propagation vector"),
         ("layer_tolerance", "Layer tolerance"),
-        ("seed", "Random seed"),
+        ("seed", "Seed / permutation index"),
         ("heuristic", "Heuristic"),
     ]
     for key, label in preferred:

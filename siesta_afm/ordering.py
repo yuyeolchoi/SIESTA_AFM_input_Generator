@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from itertools import permutations
 from math import pi
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -44,6 +45,12 @@ RANDOM_WARNING = (
     "magnetic-ordering model"
 )
 
+GRAPH_COLORING_WARNING = (
+    "proper graph coloring only avoids equal colors on adjacent atoms; it does "
+    "not minimize magnetic energy. For a collinear approximation to a frustrated "
+    "network, --allow-frustrated (max-cut) is usually the appropriate method"
+)
+
 COMMON_ANIONS = ("O", "S", "Se", "Te", "N", "F", "Cl")
 
 
@@ -83,6 +90,30 @@ def random_ordering(indices: Sequence[int], *, seed: int = 0) -> SpinAssignment:
     rng = np.random.default_rng(seed)
     signs = {index: int(rng.choice((-1, 1))) for index in indices}
     return SpinAssignment(signs, "random", {"seed": seed}, [RANDOM_WARNING])
+
+
+def graph_component_sizes(graph: nx.Graph) -> list[int]:
+    """Return deterministic connected-component sizes in lowest-index order."""
+
+    return [
+        len(component)
+        for component in sorted(nx.connected_components(graph), key=lambda nodes: min(nodes))
+    ]
+
+
+def disconnected_component_warning(component_sizes: Sequence[int]) -> str | None:
+    """Explain the arbitrary relative signs of disconnected graph components."""
+
+    if len(component_sizes) < 2:
+        return None
+    sizes = ", ".join(str(size) for size in component_sizes)
+    return (
+        f"magnetic-neighbor graph has {len(component_sizes)} disconnected components "
+        f"(sizes: {sizes}). Relative spin signs between components are set by a "
+        "deterministic convention and have no physical meaning; increase "
+        "--neighbor-cutoff to include interlayer (superexchange) neighbors, or "
+        "consider layer/propagation-vector ordering"
+    )
 
 
 def by_species_ordering(
@@ -357,6 +388,11 @@ def layer_ordering(
             f"periodic {axis}-axis contains {len(layers)} magnetic layers; the "
             "odd layer count breaks alternating AFM order across the PBC boundary"
         )
+    elif not structure.pbc[axis_number] and len(layers) % 2:
+        warnings.append(
+            "uncompensated AFM slab: net initial moment is nonzero "
+            "(odd magnetic layer count)"
+        )
     return SpinAssignment(
         signs,
         "layer",
@@ -407,6 +443,11 @@ def direction_layer_ordering(
         warnings.append(
             f"periodic layer direction contains {len(layers)} magnetic layers; the "
             "odd layer count may break alternating AFM order across a PBC boundary"
+        )
+    elif not has_periodic_component and len(layers) % 2:
+        warnings.append(
+            "uncompensated AFM slab: net initial moment is nonzero "
+            "(odd magnetic layer count)"
         )
     return SpinAssignment(
         signs,
@@ -490,6 +531,11 @@ def checkerboard_ordering(
     if not nx.is_bipartite(graph):
         raise NonBipartiteError(NON_BIPARTITE_MESSAGE)
     signs = _bipartite_signs(graph)
+    component_sizes = graph_component_sizes(graph)
+    warnings: list[str] = []
+    component_warning = disconnected_component_warning(component_sizes)
+    if component_warning:
+        warnings.append(component_warning)
     return SpinAssignment(
         signs,
         "checkerboard",
@@ -497,7 +543,9 @@ def checkerboard_ordering(
             "plane": plane,
             "cutoff": resolved,
             "normal_tolerance": normal_tolerance,
+            "component_sizes": component_sizes,
         },
+        warnings,
     )
 
 
@@ -561,6 +609,11 @@ def neighbor_bipartite_ordering(
         "graph_edges": graph.number_of_edges(),
     }
     warnings: list[str] = []
+    component_sizes = graph_component_sizes(graph)
+    metadata["component_sizes"] = component_sizes
+    component_warning = disconnected_component_warning(component_sizes)
+    if component_warning:
+        warnings.append(component_warning)
     self_image = periodic_self_image_distance(structure)
     if self_image is not None and (
         (resolved > 0 and self_image <= resolved + 1e-9)
@@ -580,6 +633,172 @@ def neighbor_bipartite_ordering(
         {**metadata, "heuristic": "max-cut local search", "frustrated": True},
         [*warnings, FRUSTRATED_WARNING],
     )
+
+
+def _color_spin_values(
+    n_colors: int, color_spins: str | Sequence[int] | None
+) -> tuple[int, ...]:
+    if color_spins is None:
+        defaults = {
+            1: (1,),
+            2: (1, -1),
+            3: (1, -1, 0),
+            4: (1, -1, 1, -1),
+        }
+        if n_colors not in defaults:
+            raise ValueError(
+                f"no default spin map for {n_colors} colors; specify --color-spins"
+            )
+        return defaults[n_colors]
+    raw = (
+        [part for part in color_spins.replace(",", " ").split() if part]
+        if isinstance(color_spins, str)
+        else list(color_spins)
+    )
+    try:
+        values = tuple(int(value) for value in raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("--color-spins must contain comma-separated -1, 0, or +1") from exc
+    if len(values) != n_colors:
+        raise ValueError(
+            f"--color-spins length {len(values)} does not match {n_colors} graph colors"
+        )
+    if any(value not in {-1, 0, 1} for value in values):
+        raise ValueError("--color-spins values must be -1, 0, or +1")
+    return values
+
+
+def _select_color_spin_map(
+    colors: Mapping[int, int],
+    base_values: Sequence[int],
+    *,
+    balance_colors: bool,
+    magnitudes: Mapping[int, float] | None,
+    seed: int,
+) -> dict[int, int]:
+    candidates = list(dict.fromkeys(permutations(base_values)))
+    if balance_colors:
+        if magnitudes is not None:
+            missing = sorted(set(colors).difference(magnitudes))
+            if missing:
+                one_based = ", ".join(str(index + 1) for index in missing)
+                raise ValueError(
+                    "moment magnitudes are missing for magnetic atom(s): " + one_based
+                )
+        color_weights = {
+            color: sum(
+                1.0 if magnitudes is None else abs(float(magnitudes[index]))
+                for index, node_color in colors.items()
+                if node_color == color
+            )
+            for color in range(len(base_values))
+        }
+        scores = [
+            abs(
+                sum(
+                    color_weights[color] * value
+                    for color, value in enumerate(candidate)
+                )
+            )
+            for candidate in candidates
+        ]
+        best = min(scores)
+        candidates = [
+            candidate
+            for candidate, score in zip(candidates, scores)
+            if abs(score - best) <= 1e-12
+        ]
+    selected = candidates[seed % len(candidates)]
+    return {color: value for color, value in enumerate(selected)}
+
+
+def graph_coloring_ordering(
+    structure: Structure,
+    indices: Sequence[int],
+    *,
+    cutoff: str | float | None = "auto",
+    neighbor_shell: int = 1,
+    max_colors: int = 4,
+    color_spins: str | Sequence[int] | None = None,
+    balance_colors: bool = False,
+    magnitudes: Mapping[int, float] | None = None,
+    seed: int = 0,
+) -> SpinAssignment:
+    """Generate a collinear candidate from a proper graph coloring."""
+
+    if max_colors < 1:
+        raise ValueError("--max-colors must be a positive integer")
+    graph, resolved, _ = build_neighbor_graph(
+        structure, indices, cutoff, neighbor_shell=neighbor_shell
+    )
+    bipartite = nx.is_bipartite(graph)
+    if bipartite:
+        reference_signs = _bipartite_signs(graph)
+        if any(sign < 0 for sign in reference_signs.values()):
+            colors = {
+                index: 0 if reference_signs[index] > 0 else 1 for index in indices
+            }
+            n_colors = 2
+        else:
+            colors = {index: 0 for index in indices}
+            n_colors = 1
+        strategy = "bipartite fallback"
+    else:
+        raw_colors = nx.greedy_color(graph, strategy="DSATUR")
+        remap = {
+            original: normalized
+            for normalized, original in enumerate(sorted(set(raw_colors.values())))
+        }
+        colors = {index: remap[raw_colors[index]] for index in indices}
+        n_colors = len(remap)
+        strategy = "DSATUR"
+    if n_colors > max_colors:
+        raise ValueError(
+            f"graph coloring requires {n_colors} colors, exceeding --max-colors "
+            f"{max_colors}"
+        )
+    base_values = _color_spin_values(n_colors, color_spins)
+    if bipartite and color_spins is None:
+        canonical_values = (1,) if n_colors == 1 else (1, -1)
+        color_spin_map = {
+            color: value for color, value in enumerate(canonical_values)
+        }
+        signs = reference_signs
+    else:
+        color_spin_map = _select_color_spin_map(
+            colors,
+            base_values,
+            balance_colors=balance_colors,
+            magnitudes=magnitudes,
+            seed=seed,
+        )
+        signs = {index: color_spin_map[color] for index, color in colors.items()}
+    component_sizes = graph_component_sizes(graph)
+    warnings = [GRAPH_COLORING_WARNING]
+    component_warning = disconnected_component_warning(component_sizes)
+    if component_warning:
+        warnings.append(component_warning)
+    self_image = periodic_self_image_distance(structure)
+    metadata: dict[str, object] = {
+        "cutoff": resolved,
+        "graph_nodes": graph.number_of_nodes(),
+        "graph_edges": graph.number_of_edges(),
+        "component_sizes": component_sizes,
+        "colors": colors,
+        "n_colors": n_colors,
+        "color_spin_map": color_spin_map,
+        "strategy": strategy,
+        "balance_colors": balance_colors,
+        "balance_metric": "moment" if magnitudes is not None else "unit-spin",
+        "seed": seed,
+    }
+    if self_image is not None and (
+        (resolved > 0 and self_image <= resolved + 1e-9)
+        or (len(indices) == 1 and (cutoff is None or str(cutoff).lower() == "auto"))
+    ):
+        warnings.append(SMALL_CELL_WARNING)
+        metadata["periodic_self_image_distance"] = self_image
+    return SpinAssignment(signs, "graph-coloring", metadata, warnings)
 
 
 def propagation_vector_ordering(

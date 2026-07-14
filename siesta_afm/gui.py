@@ -28,6 +28,7 @@ _METHODS = [
     "alternating-index",
     "random",
     "checkerboard",
+    "graph-coloring",
     "propagation-vector",
     "by-species",
     "by-coordination",
@@ -59,6 +60,9 @@ class GenerationParams:
     up_coordination: tuple[int, ...] = (6,)
     down_coordination: tuple[int, ...] = (4,)
     coordination_tolerance: int = 0
+    max_colors: int = 4
+    color_spins: str | None = None
+    balance_colors: bool = False
     seed: int = 0
     color_mode: str = "sign"
 
@@ -134,6 +138,9 @@ def run_generation(params: GenerationParams) -> GenerationResult:
         up_coordination=params.up_coordination,
         down_coordination=params.down_coordination,
         coordination_tolerance=params.coordination_tolerance,
+        max_colors=params.max_colors,
+        color_spins=params.color_spins,
+        balance_colors=params.balance_colors,
         seed=params.seed,
     )
     block = render_dm_init_spin(
@@ -336,6 +343,9 @@ class DesktopApp:
         self.up_coordination_var = tk.StringVar(value="6")
         self.down_coordination_var = tk.StringVar(value="4")
         self.coordination_tolerance_var = tk.StringVar(value="0")
+        self.max_colors_var = tk.StringVar(value="4")
+        self.color_spins_var = tk.StringVar(value="")
+        self.balance_colors_var = tk.BooleanVar(value=False)
         self.seed_var = tk.StringVar(value="0")
         self.color_mode_var = tk.StringVar(value="spin sign")
         self.live_update_var = tk.BooleanVar(value=True)
@@ -418,7 +428,15 @@ class DesktopApp:
         row = self._entry_row(
             panel, row, "Coordination tolerance", self.coordination_tolerance_var
         )
-        row = self._entry_row(panel, row, "Random seed", self.seed_var)
+        row = self._entry_row(panel, row, "Maximum graph colors", self.max_colors_var)
+        row = self._entry_row(
+            panel, row, "Color spins (+1,-1,0; blank=default)", self.color_spins_var
+        )
+        ttk.Checkbutton(
+            panel, text="Balance graph colors", variable=self.balance_colors_var
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=3)
+        row += 1
+        row = self._entry_row(panel, row, "Random / permutation seed", self.seed_var)
         ttk.Checkbutton(
             panel,
             text="Allow frustrated heuristic",
@@ -428,7 +446,7 @@ class DesktopApp:
         row = self._combo_row(
             panel,
             row,
-            "Color mode",
+            "Plot color mode",
             self.color_mode_var,
             list(_COLOR_MODES),
         )
@@ -557,6 +575,9 @@ class DesktopApp:
             self.up_coordination_var,
             self.down_coordination_var,
             self.coordination_tolerance_var,
+            self.max_colors_var,
+            self.color_spins_var,
+            self.balance_colors_var,
             self.seed_var,
             self.allow_frustrated_var,
             self.color_mode_var,
@@ -634,7 +655,15 @@ class DesktopApp:
             up_coordination = (6,)
             down_coordination = (4,)
             coordination_tolerance = 0
-        seed = int(self.seed_var.get()) if method == "random" else 0
+        if method == "graph-coloring":
+            max_colors = int(self.max_colors_var.get())
+            color_spins = self.color_spins_var.get().strip() or None
+            balance_colors = self.balance_colors_var.get()
+        else:
+            max_colors = 4
+            color_spins = None
+            balance_colors = False
+        seed = int(self.seed_var.get()) if method in {"random", "graph-coloring"} else 0
         cutoff: str | float = (
             "auto" if self.auto_cutoff_var.get() else float(self.cutoff_var.get())
         )
@@ -659,6 +688,9 @@ class DesktopApp:
             up_coordination=up_coordination,
             down_coordination=down_coordination,
             coordination_tolerance=coordination_tolerance,
+            max_colors=max_colors,
+            color_spins=color_spins,
+            balance_colors=balance_colors,
             seed=seed,
             color_mode=_COLOR_MODES[self.color_mode_var.get()],
         )
@@ -733,8 +765,12 @@ class DesktopApp:
         self.viewing_spin_path = None
         self.mode_var.set("generation mode")
         analysis = format_analysis(result.report)
-        if result.warnings:
-            analysis += "\n\nWarnings:\n" + "\n".join(result.warnings)
+        report_warnings = set(result.report.get("warnings", []))
+        extra_warnings = [
+            warning for warning in result.warnings if warning not in report_warnings
+        ]
+        if extra_warnings:
+            analysis += "\n\nWarnings:\n" + "\n".join(extra_warnings)
         self._set_text(self.analysis_text, analysis)
         self._set_text(self.spin_text, result.block)
         self._replace_figure(figure)

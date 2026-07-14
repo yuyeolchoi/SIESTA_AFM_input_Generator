@@ -50,8 +50,10 @@ def test_generation_controller_runs_without_tk_widgets() -> None:
     assert parse_dm_init_spin(result.block)
 
 
-def test_gui_exposes_f9_methods_and_propagation_preset() -> None:
-    assert {"random", "by-species", "by-coordination"}.issubset(gui._METHODS)
+def test_gui_exposes_generation_methods_and_propagation_preset() -> None:
+    assert {"random", "by-species", "by-coordination", "graph-coloring"}.issubset(
+        gui._METHODS
+    )
     result = gui.run_generation(
         gui.GenerationParams(
             structure_path=ROOT / "examples" / "CuO_bulk.cif",
@@ -63,6 +65,33 @@ def test_gui_exposes_f9_methods_and_propagation_preset() -> None:
     )
     assert result.assignment.metadata["afm_type"] == "G"
     assert result.report["number_of_magnetic_atoms"] == 4
+
+
+def test_gui_controller_passes_graph_coloring_options(tmp_path: Path) -> None:
+    root3 = 3.0**0.5
+    structure = tmp_path / "triangle.xyz"
+    structure.write_text(
+        "3\ntriangle\n"
+        "Cu 0 0 0\n"
+        "Cu 1 0 0\n"
+        f"Cu 0.5 {root3 / 2:.12f} 0\n",
+        encoding="utf-8",
+    )
+    result = gui.run_generation(
+        gui.GenerationParams(
+            structure_path=structure,
+            magnetic_species=("Cu",),
+            method="graph-coloring",
+            moment="1",
+            cutoff=1.01,
+            max_colors=3,
+            color_spins="+1,-1,0",
+            seed=1,
+        )
+    )
+    assert result.assignment.metadata["n_colors"] == 3
+    assert set(result.spins.values()) == {-1.0, 0.0, 1.0}
+    assert "proper graph coloring" in "\n".join(result.warnings)
 
 
 def test_gui_controller_runs_inverse_spinel_coordination_method() -> None:
