@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Mapping
+from typing import Any, Mapping
 
 import numpy as np
 from ase import Atoms
@@ -73,18 +73,49 @@ def plot_spin_pattern(
     if suffix not in {".png", ".svg"}:
         raise ValueError("plot output must be PNG, SVG, XYZ, or CIF")
 
+    fig = create_spin_figure(
+        structure,
+        spins,
+        show_indices=show_indices,
+        color_by_layer=color_by_layer,
+        color_mode=color_mode,
+        up_color=up_color,
+        down_color=down_color,
+        nonmagnetic_color=nonmagnetic_color,
+    )
+    try:
+        fig.savefig(destination, dpi=180)
+    finally:
+        fig.clear()
+    return destination
+
+
+def create_spin_figure(
+    structure: Structure,
+    spins: Mapping[int, float],
+    *,
+    show_indices: bool = False,
+    color_by_layer: bool = False,
+    color_mode: str = "sign",
+    up_color: str = "tab:red",
+    down_color: str = "tab:blue",
+    nonmagnetic_color: str = "0.65",
+) -> Any:
+    """Build and return a backend-neutral matplotlib Figure for a spin pattern."""
+
+    if color_mode not in {"sign", "value"}:
+        raise ValueError("color_mode must be 'sign' or 'value'")
+
     try:
         import matplotlib
-
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
+        from matplotlib.figure import Figure
     except ImportError as exc:
         raise RuntimeError(
             "PNG/SVG plotting requires the optional plot dependency; "
             "install with 'pip install siesta-afm[plot]'"
         ) from exc
 
-    fig = plt.figure(figsize=(8, 7))
+    fig = Figure(figsize=(8, 7))
     ax = fig.add_subplot(111, projection="3d")
     nonmagnetic, up_indices, down_indices = classify_spin_indices(structure, spins)
     if nonmagnetic:
@@ -174,6 +205,4 @@ def plot_spin_pattern(
     ax.set_title("SIESTA initial spin pattern")
     ax.legend(loc="best")
     fig.tight_layout()
-    fig.savefig(destination, dpi=180)
-    plt.close(fig)
-    return destination
+    return fig

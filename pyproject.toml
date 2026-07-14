@@ -19,7 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 oxidation = ["pymatgen>=2024.1"]
 plot = ["matplotlib>=3.7"]
-gui = ["streamlit>=1.32", "matplotlib>=3.7"]
+gui = ["matplotlib>=3.7"]
 yaml = ["PyYAML>=6.0"]
 test = ["pytest>=8.0", "matplotlib>=3.7"]
 

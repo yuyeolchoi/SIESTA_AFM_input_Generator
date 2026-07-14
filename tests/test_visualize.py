@@ -4,7 +4,11 @@ import numpy as np
 import pytest
 
 from siesta_afm.structure import Structure
-from siesta_afm.visualize import classify_spin_indices, plot_spin_pattern
+from siesta_afm.visualize import (
+    classify_spin_indices,
+    create_spin_figure,
+    plot_spin_pattern,
+)
 
 
 def test_zero_spin_is_classified_as_nonmagnetic() -> None:
@@ -80,3 +84,14 @@ def test_invalid_color_mode_is_rejected(tmp_path: Path) -> None:
         plot_spin_pattern(
             structure, {0: 0.5}, tmp_path / "invalid.png", color_mode="element"
         )
+
+
+def test_create_spin_figure_returns_embeddable_figure_with_value_colorbar() -> None:
+    pytest.importorskip("matplotlib")
+    structure = Structure(
+        ["Cu", "Cu"], [[0, 0, 0], [1, 0, 0]], np.eye(3), (False, False, False)
+    )
+    figure = create_spin_figure(structure, {0: 0.7, 1: -0.5}, color_mode="value")
+    assert len(figure.axes) == 2
+    assert figure.axes[1].get_ylabel() == "initial spin (μB)"
+    figure.clear()

@@ -14,10 +14,10 @@ if not exist "%PYTHON_EXE%" (
     set "PYTHON_EXE=python"
 )
 
-"%PYTHON_EXE%" -c "import streamlit" >nul 2>&1
+"%PYTHON_EXE%" -c "import tkinter, matplotlib" >nul 2>&1
 if errorlevel 1 (
-    echo [siesta-afm] Streamlit is not installed for this Python environment.
-    echo Install the GUI dependencies from this repository with:
+    echo [siesta-afm] Tkinter or matplotlib is unavailable for this Python environment.
+    echo Install Python with Tk support and the GUI dependencies with:
     echo.
     echo     "%PYTHON_EXE%" -m pip install -e ".[gui]"
     echo.
