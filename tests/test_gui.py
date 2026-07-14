@@ -50,6 +50,38 @@ def test_generation_controller_runs_without_tk_widgets() -> None:
     assert parse_dm_init_spin(result.block)
 
 
+def test_gui_exposes_f9_methods_and_propagation_preset() -> None:
+    assert {"random", "by-species", "by-coordination"}.issubset(gui._METHODS)
+    result = gui.run_generation(
+        gui.GenerationParams(
+            structure_path=ROOT / "examples" / "CuO_bulk.cif",
+            magnetic_species=("Cu",),
+            method="propagation-vector",
+            moment="0.5",
+            afm_type="G",
+        )
+    )
+    assert result.assignment.metadata["afm_type"] == "G"
+    assert result.report["number_of_magnetic_atoms"] == 4
+
+
+def test_gui_controller_runs_inverse_spinel_coordination_method() -> None:
+    result = gui.run_generation(
+        gui.GenerationParams(
+            structure_path=ROOT / "examples" / "NiCo2O4_311_slab.cif",
+            magnetic_species=("Ni", "Co"),
+            method="by-coordination",
+            moment="Ni@6=1.0 Co@4=2.0 Co@6=0.5",
+            slab=True,
+            anion_species=("O",),
+        )
+    )
+    assert len(result.spins) == 6
+    assert sum(value > 0 for value in result.spins.values()) == 4
+    assert sum(value < 0 for value in result.spins.values()) == 2
+    assert "inverse spinel" in "\n".join(result.warnings)
+
+
 def test_generation_controller_rejects_unknown_species() -> None:
     with pytest.raises(ValueError, match="magnetic atoms|species"):
         gui.run_generation(

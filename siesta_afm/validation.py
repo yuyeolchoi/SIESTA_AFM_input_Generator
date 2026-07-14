@@ -10,7 +10,7 @@ import networkx as nx
 
 from .io import parse_dm_init_spin
 from .neighbors import build_neighbor_graph, shell_summary
-from .ordering import detect_layers
+from .ordering import detect_direction_layers, detect_layers
 from .structure import Structure
 
 
@@ -141,11 +141,29 @@ def analyze_structure(
     neighbor_shell: int = 1,
     axis: str = "z",
     layer_tolerance: float = 0.25,
+    fractional_layers: bool = False,
+    layer_direction: Sequence[float] | None = None,
 ) -> dict[str, object]:
     graph, resolved, pairs = build_neighbor_graph(
         structure, magnetic_indices, cutoff, neighbor_shell=neighbor_shell
     )
-    layers = detect_layers(structure, magnetic_indices, axis, layer_tolerance)
+    if layer_direction is None:
+        layers = detect_layers(
+            structure,
+            magnetic_indices,
+            axis,
+            layer_tolerance,
+            fractional=fractional_layers,
+        )
+        layer_label = axis
+    else:
+        layers, direction = detect_direction_layers(
+            structure,
+            magnetic_indices,
+            layer_direction,
+            tolerance=layer_tolerance,
+        )
+        layer_label = "direction " + " ".join(f"{value:g}" for value in direction)
     return {
         "number_of_atoms": len(structure),
         "magnetic_species": list(magnetic_species),
@@ -156,7 +174,7 @@ def analyze_structure(
         "graph_edges": graph.number_of_edges(),
         "connected_components": nx.number_connected_components(graph),
         "bipartite": nx.is_bipartite(graph),
-        "axis": axis,
+        "axis": layer_label,
         "detected_layers": len(layers),
         "atoms_per_layer": [len(layer) for layer in layers],
     }

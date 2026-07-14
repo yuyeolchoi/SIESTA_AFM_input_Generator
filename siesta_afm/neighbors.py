@@ -46,12 +46,54 @@ def minimum_image_vector(structure: Structure, i: int, j: int) -> np.ndarray:
     return min(candidates, key=lambda vector: float(np.dot(vector, vector)))
 
 
+def periodic_self_image_distance(structure: Structure) -> float | None:
+    """Return the shortest nonzero periodic cell translation.
+
+    This is the nearest possible distance between an atom and one of its own
+    periodic images.  ``None`` denotes a nonperiodic structure.
+    """
+
+    periodic_axes = [axis for axis, periodic in enumerate(structure.pbc) if periodic]
+    if not periodic_axes:
+        return None
+    if abs(float(np.linalg.det(structure.cell))) < 1e-12:
+        raise ValueError("periodic distances require a nonsingular cell")
+    choices = [(-1, 0, 1) if axis in periodic_axes else (0,) for axis in range(3)]
+    vectors = [
+        np.asarray(shift, dtype=float) @ structure.cell
+        for shift in product(*choices)
+        if any(shift)
+    ]
+    return min(float(np.linalg.norm(vector)) for vector in vectors)
+
+
 def magnetic_pair_distances(
     structure: Structure, indices: Sequence[int]
 ) -> list[PairDistance]:
     pairs: list[PairDistance] = []
     for left, i in enumerate(indices):
         for j in indices[left + 1 :]:
+            vector = minimum_image_vector(structure, i, j)
+            distance = float(np.linalg.norm(vector))
+            if distance > 1e-10:
+                pairs.append(PairDistance(i, j, distance, vector))
+    return sorted(pairs, key=lambda pair: (pair.distance, pair.i, pair.j))
+
+
+def cross_pair_distances(
+    structure: Structure,
+    left_indices: Sequence[int],
+    right_indices: Sequence[int],
+) -> list[PairDistance]:
+    """Return minimum-image distances between two atom-index groups."""
+
+    pairs: list[PairDistance] = []
+    seen: set[tuple[int, int]] = set()
+    for i in left_indices:
+        for j in right_indices:
+            if i == j or (i, j) in seen:
+                continue
+            seen.add((i, j))
             vector = minimum_image_vector(structure, i, j)
             distance = float(np.linalg.norm(vector))
             if distance > 1e-10:
@@ -116,7 +158,12 @@ def build_neighbor_graph(
     pairs = magnetic_pair_distances(structure, indices)
     if len(indices) > 1 and not pairs:
         raise ValueError("no finite magnetic-atom pair distances")
-    resolved = resolve_cutoff(pairs, cutoff, neighbor_shell) if pairs else 0.0
+    if pairs:
+        resolved = resolve_cutoff(pairs, cutoff, neighbor_shell)
+    elif cutoff is None or str(cutoff).lower() == "auto":
+        resolved = 0.0
+    else:
+        resolved = resolve_cutoff((), cutoff, neighbor_shell)
     graph = nx.Graph()
     graph.add_nodes_from(indices)
     for pair in pairs:

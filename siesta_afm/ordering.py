@@ -13,7 +13,10 @@ import numpy as np
 from .neighbors import (
     PairDistance,
     build_neighbor_graph,
+    cross_pair_distances,
+    distance_shells,
     magnetic_pair_distances,
+    periodic_self_image_distance,
     resolve_cutoff,
 )
 from .structure import Structure
@@ -30,6 +33,18 @@ Suggested alternatives:
 
 FRUSTRATED_WARNING = """The generated spin assignment is a heuristic initial state for a frustrated magnetic network.
 It is not guaranteed to represent the experimental magnetic ground state."""
+
+SMALL_CELL_WARNING = (
+    "cell too small for AFM ordering; use a supercell because a magnetic atom's "
+    "periodic self-image lies within the neighbor cutoff"
+)
+
+RANDOM_WARNING = (
+    "random spin assignment is an exploratory initial state, not a physical "
+    "magnetic-ordering model"
+)
+
+COMMON_ANIONS = ("O", "S", "Se", "Te", "N", "F", "Cl")
 
 
 class NonBipartiteError(ValueError):
@@ -64,6 +79,198 @@ def alternating_index(indices: Sequence[int]) -> SpinAssignment:
     )
 
 
+def random_ordering(indices: Sequence[int], *, seed: int = 0) -> SpinAssignment:
+    rng = np.random.default_rng(seed)
+    signs = {index: int(rng.choice((-1, 1))) for index in indices}
+    return SpinAssignment(signs, "random", {"seed": seed}, [RANDOM_WARNING])
+
+
+def by_species_ordering(
+    structure: Structure,
+    indices: Sequence[int],
+    magnetic_species: Sequence[str],
+    up_species: Sequence[str],
+    down_species: Sequence[str],
+) -> SpinAssignment:
+    """Assign opposite signs to two explicitly named element sublattices."""
+
+    magnetic = {item.strip().lower() for item in magnetic_species if item.strip()}
+    up = {item.strip().lower() for item in up_species if item.strip()}
+    down = {item.strip().lower() for item in down_species if item.strip()}
+    if not up or not down:
+        raise ValueError(
+            "by-species requires both --up-species and --down-species; use "
+            "by-coordination when one element occupies both Td/Oh inverse-spinel sites"
+        )
+    overlap = up & down
+    if overlap:
+        raise ValueError(
+            f"up/down species overlap: {', '.join(sorted(overlap))}"
+        )
+    supplied = up | down
+    missing = magnetic - supplied
+    extra = supplied - magnetic
+    if missing or extra:
+        details = []
+        if missing:
+            details.append(f"missing magnetic species: {', '.join(sorted(missing))}")
+        if extra:
+            details.append(f"nonmagnetic/extra species: {', '.join(sorted(extra))}")
+        raise ValueError(
+            "by-species groups must exactly cover --magnetic-species ("
+            + "; ".join(details)
+            + "); use by-coordination when one element occupies both Td/Oh "
+            "inverse-spinel sites"
+        )
+    signs = {
+        index: 1 if structure.symbols[index].lower() in up else -1
+        for index in indices
+    }
+    return SpinAssignment(
+        signs,
+        "by-species",
+        {"up_species": sorted(up), "down_species": sorted(down)},
+    )
+
+
+def _resolve_anion_species(
+    structure: Structure, anion_species: Sequence[str] | None
+) -> list[str]:
+    if anion_species:
+        requested = [item.strip() for item in anion_species if item.strip()]
+        if not requested:
+            raise ValueError("--anion-species must name at least one element")
+        return requested
+    present = {symbol.lower() for symbol in structure.symbols}
+    detected = [symbol for symbol in COMMON_ANIONS if symbol.lower() in present]
+    if not detected:
+        raise ValueError(
+            "could not auto-detect an anion species; specify --anion-species"
+        )
+    if len(detected) > 1:
+        raise ValueError(
+            "multiple possible anion species were found "
+            f"({', '.join(detected)}); specify --anion-species"
+        )
+    return detected
+
+
+def coordination_ordering(
+    structure: Structure,
+    indices: Sequence[int],
+    *,
+    anion_species: Sequence[str] | None = None,
+    anion_cutoff: str | float | None = "auto",
+    up_coordination: Sequence[int] = (6,),
+    down_coordination: Sequence[int] = (4,),
+    coordination_tolerance: int = 0,
+) -> SpinAssignment:
+    """Classify magnetic sites by their first-shell anion coordination."""
+
+    if coordination_tolerance < 0:
+        raise ValueError("coordination tolerance must be a nonnegative integer")
+    up_values = {int(value) for value in up_coordination}
+    down_values = {int(value) for value in down_coordination}
+    if not up_values or not down_values or min(up_values | down_values) < 0:
+        raise ValueError("up/down coordination lists must contain nonnegative integers")
+    anions = _resolve_anion_species(structure, anion_species)
+    wanted = {item.lower() for item in anions}
+    anion_indices = [
+        index for index, symbol in enumerate(structure.symbols) if symbol.lower() in wanted
+    ]
+    if not anion_indices:
+        raise ValueError(
+            f"no atoms matched anion species: {', '.join(anions)}"
+        )
+    overlap = sorted(set(indices) & set(anion_indices))
+    if overlap:
+        raise ValueError(
+            f"anion species overlaps magnetic atom {overlap[0] + 1}; choose distinct "
+            "magnetic and anion species"
+        )
+    pairs = cross_pair_distances(structure, indices, anion_indices)
+    if not pairs:
+        raise ValueError("no finite magnetic-anion distances were found")
+    site_cutoffs: dict[int, float] = {}
+    if anion_cutoff is None or str(anion_cutoff).lower() == "auto":
+        # Distorted spinels commonly have different Td-O and Oh-O bond
+        # lengths.  Resolve the first shell per magnetic site so the shorter
+        # sublattice's second shell is not mistaken for a bond while the
+        # longer sublattice is being included.
+        for index in indices:
+            site_pairs = [pair for pair in pairs if pair.i == index]
+            shells = distance_shells(site_pairs)
+            first_upper = max(pair.distance for pair in shells[0][1])
+            site_cutoffs[index] = (
+                (first_upper + min(pair.distance for pair in shells[1][1])) / 2.0
+                if len(shells) > 1
+                else first_upper * 1.05 + 1e-6
+            )
+        resolved = max(site_cutoffs.values())
+    else:
+        resolved = float(anion_cutoff)
+        if resolved <= 0:
+            raise ValueError("anion cutoff must be positive")
+        site_cutoffs = {index: resolved for index in indices}
+    coordinations = {index: 0 for index in indices}
+    for pair in pairs:
+        if pair.distance <= site_cutoffs[pair.i] + 1e-9:
+            coordinations[pair.i] += 1
+
+    signs: dict[int, int] = {}
+    sublattices: dict[int, str] = {}
+    unclassified: list[str] = []
+    for index in indices:
+        coordination = coordinations[index]
+        matches_up = any(
+            abs(coordination - target) <= coordination_tolerance
+            for target in up_values
+        )
+        matches_down = any(
+            abs(coordination - target) <= coordination_tolerance
+            for target in down_values
+        )
+        if matches_up == matches_down:
+            reason = "matches both sublattices" if matches_up else "is unclassified"
+            unclassified.append(
+                f"atom {index + 1} ({structure.symbols[index]}, CN={coordination}) {reason}"
+            )
+            continue
+        signs[index] = 1 if matches_up else -1
+        sublattices[index] = "up" if matches_up else "down"
+    if unclassified:
+        raise ValueError("; ".join(unclassified))
+
+    warnings: list[str] = []
+    up_elements = {
+        structure.symbols[index].lower() for index, sign in signs.items() if sign > 0
+    }
+    down_elements = {
+        structure.symbols[index].lower() for index, sign in signs.items() if sign < 0
+    }
+    shared = sorted(up_elements & down_elements)
+    if shared:
+        warnings.append(
+            "the same magnetic element appears in both coordination sublattices "
+            f"({', '.join(shared)}), as can occur in an inverse spinel"
+        )
+    return SpinAssignment(
+        signs,
+        "by-coordination",
+        {
+            "anion_species": anions,
+            "anion_cutoff": resolved,
+            "anion_cutoffs": site_cutoffs,
+            "coordination_numbers": coordinations,
+            "sublattice_classification": sublattices,
+            "up_coordination": sorted(up_values),
+            "down_coordination": sorted(down_values),
+            "coordination_tolerance": coordination_tolerance,
+        },
+        warnings,
+    )
+
+
 def detect_layers(
     structure: Structure,
     indices: Sequence[int],
@@ -72,6 +279,20 @@ def detect_layers(
     *,
     fractional: bool = False,
 ) -> list[list[int]]:
+    layers, _ = _detect_layers_with_metadata(
+        structure, indices, axis, tolerance, fractional=fractional
+    )
+    return layers
+
+
+def _detect_layers_with_metadata(
+    structure: Structure,
+    indices: Sequence[int],
+    axis: str = "z",
+    tolerance: float = 0.25,
+    *,
+    fractional: bool = False,
+) -> tuple[list[list[int]], bool]:
     if axis not in "xyz":
         raise ValueError("axis must be x, y, or z")
     if tolerance < 0:
@@ -89,7 +310,18 @@ def detect_layers(
             layers.append([(value, index)])
         else:
             layers[-1].append((value, index))
-    return [[index for _, index in layer] for layer in layers]
+    wrapped_layer_merged = False
+    axis_number = "xyz".index(axis)
+    if len(layers) > 1 and structure.pbc[axis_number]:
+        period = 1.0 if fractional else float(np.linalg.norm(structure.cell[axis_number]))
+        first_mean = float(np.mean([item[0] for item in layers[0]]))
+        last_mean = float(np.mean([item[0] for item in layers[-1]]))
+        if period - (last_mean - first_mean) <= tolerance + 1e-12:
+            # Keep the wrapped layer first so its sign and atom ordering remain
+            # deterministic, then continue through the interior layers.
+            layers = [layers[-1] + layers[0], *layers[1:-1]]
+            wrapped_layer_merged = True
+    return [[index for _, index in layer] for layer in layers], wrapped_layer_merged
 
 
 def layer_ordering(
@@ -100,17 +332,105 @@ def layer_ordering(
     tolerance: float = 0.25,
     fractional: bool = False,
 ) -> SpinAssignment:
-    layers = detect_layers(structure, indices, axis, tolerance, fractional=fractional)
+    layers, wrapped_layer_merged = _detect_layers_with_metadata(
+        structure, indices, axis, tolerance, fractional=fractional
+    )
     signs = {
         index: 1 if layer_number % 2 == 0 else -1
         for layer_number, layer in enumerate(layers)
         for index in layer
     }
+    warnings: list[str] = []
+    axis_number = "xyz".index(axis)
+    if structure.pbc[axis_number] and len(layers) % 2:
+        warnings.append(
+            f"periodic {axis}-axis contains {len(layers)} magnetic layers; the "
+            "odd layer count breaks alternating AFM order across the PBC boundary"
+        )
     return SpinAssignment(
         signs,
         "layer",
-        {"axis": axis, "layer_tolerance": tolerance, "layers": layers},
+        {
+            "axis": axis,
+            "layer_tolerance": tolerance,
+            "fractional_layers": fractional,
+            "layers": layers,
+            "wrapped_layer_merged": wrapped_layer_merged,
+        },
+        warnings,
     )
+
+
+def direction_layer_ordering(
+    structure: Structure,
+    indices: Sequence[int],
+    direction: Sequence[float],
+    *,
+    tolerance: float = 0.25,
+) -> SpinAssignment:
+    """Alternate layers along an arbitrary Cartesian projection direction."""
+
+    layers, vector = detect_direction_layers(
+        structure, indices, direction, tolerance=tolerance
+    )
+    signs = {
+        index: 1 if layer_number % 2 == 0 else -1
+        for layer_number, layer in enumerate(layers)
+        for index in layer
+    }
+    periodic = all(
+        structure.pbc[axis]
+        for axis, component in enumerate(vector)
+        if abs(component) > 1e-12
+    )
+    warnings: list[str] = []
+    if periodic and len(layers) % 2:
+        warnings.append(
+            f"periodic layer direction contains {len(layers)} magnetic layers; the "
+            "odd layer count may break alternating AFM order across a PBC boundary"
+        )
+    return SpinAssignment(
+        signs,
+        "layer",
+        {
+            "layer_direction": vector.tolist(),
+            "layer_tolerance": tolerance,
+            "layers": layers,
+        },
+        warnings,
+    )
+
+
+def detect_direction_layers(
+    structure: Structure,
+    indices: Sequence[int],
+    direction: Sequence[float],
+    *,
+    tolerance: float = 0.25,
+) -> tuple[list[list[int]], np.ndarray]:
+    """Cluster atoms by Cartesian projection along an arbitrary direction."""
+
+    vector = np.asarray(direction, dtype=float)
+    if vector.shape != (3,) or float(np.linalg.norm(vector)) <= 1e-12:
+        raise ValueError("layer direction must contain three values and be nonzero")
+    if tolerance < 0:
+        raise ValueError("layer tolerance must be nonnegative")
+    unit = vector / np.linalg.norm(vector)
+    values = sorted(
+        (float(np.dot(structure.positions[index], unit)), index) for index in indices
+    )
+    grouped: list[list[tuple[float, int]]] = []
+    for value, index in values:
+        if (
+            not grouped
+            or abs(value - float(np.mean([item[0] for item in grouped[-1]])))
+            > tolerance
+        ):
+            grouped.append([(value, index)])
+        else:
+            grouped[-1].append((value, index))
+    layers = [[index for _, index in layer] for layer in grouped]
+    return layers, vector
 
 
 def checkerboard_ordering(
@@ -221,15 +541,25 @@ def neighbor_bipartite_ordering(
         "graph_nodes": graph.number_of_nodes(),
         "graph_edges": graph.number_of_edges(),
     }
+    warnings: list[str] = []
+    self_image = periodic_self_image_distance(structure)
+    if self_image is not None and (
+        (resolved > 0 and self_image <= resolved + 1e-9)
+        or (len(indices) == 1 and (cutoff is None or str(cutoff).lower() == "auto"))
+    ):
+        warnings.append(SMALL_CELL_WARNING)
+        metadata["periodic_self_image_distance"] = self_image
     if nx.is_bipartite(graph):
-        return SpinAssignment(_bipartite_signs(graph), "neighbor-bipartite", metadata)
+        return SpinAssignment(
+            _bipartite_signs(graph), "neighbor-bipartite", metadata, warnings
+        )
     if not allow_frustrated:
         raise NonBipartiteError(NON_BIPARTITE_MESSAGE)
     return SpinAssignment(
         _frustrated_signs(graph, seed),
         "neighbor-bipartite",
         {**metadata, "heuristic": "max-cut local search", "frustrated": True},
-        [FRUSTRATED_WARNING],
+        [*warnings, FRUSTRATED_WARNING],
     )
 
 
@@ -255,13 +585,40 @@ def propagation_vector_ordering(
         else structure.positions
     )
     signs: dict[int, int] = {}
+    node_indices: list[int] = []
     for index in indices:
         value = float(np.cos(2.0 * pi * np.dot(q, coordinates[index]) + phase))
+        if abs(value) < 1e-6:
+            node_indices.append(index)
         signs[index] = 1 if value >= 0 else -1
+    warnings: list[str] = []
+    if node_indices:
+        displayed = ", ".join(str(index + 1) for index in node_indices[:12])
+        if len(node_indices) > 12:
+            displayed += f", ... ({len(node_indices)} total)"
+        coordinate_hint = (
+            "q-vector components are fractional coordinates of the input cell and "
+            "must be scaled when using a supercell"
+            if fractional_coordinates
+            else "q-vector components are Cartesian because Cartesian-coordinate "
+            "mode is active"
+        )
+        warnings.append(
+            f"propagation-vector cosine is near a node for {len(node_indices)} atom(s) "
+            f"(1-based indices: {displayed}); {coordinate_hint}"
+        )
+    n_up = sum(sign > 0 for sign in signs.values())
+    n_down = len(signs) - n_up
+    if abs(n_up - n_down) > max(2, 0.1 * len(signs)):
+        warnings.append(
+            f"propagation-vector assignment is strongly imbalanced "
+            f"({n_up} up, {n_down} down); check q-vector scaling and phase"
+        )
     return SpinAssignment(
         signs,
         "propagation-vector",
         {"q_vector": q.tolist(), "phase": phase, "fractional": fractional_coordinates},
+        warnings,
     )
 
 

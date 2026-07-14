@@ -26,8 +26,11 @@ _METHODS = [
     "layer",
     "neighbor-bipartite",
     "alternating-index",
+    "random",
     "checkerboard",
     "propagation-vector",
+    "by-species",
+    "by-coordination",
 ]
 _COLOR_MODES = {"spin sign": "sign", "spin value": "value"}
 
@@ -41,11 +44,22 @@ class GenerationParams:
     method: str = "layer"
     moment: str = "0.5"
     axis: str = "z"
+    layer_direction: tuple[float, float, float] | None = None
+    fractional_layers: bool = False
     cutoff: str | float = "auto"
     layer_tolerance: float = 0.25
     slab: bool = False
     q_vector: tuple[float, float, float] | None = None
+    afm_type: str | None = None
     allow_frustrated: bool = False
+    up_species: tuple[str, ...] = ()
+    down_species: tuple[str, ...] = ()
+    anion_species: tuple[str, ...] = ()
+    anion_cutoff: str | float = "auto"
+    up_coordination: tuple[int, ...] = (6,)
+    down_coordination: tuple[int, ...] = (4,)
+    coordination_tolerance: int = 0
+    seed: int = 0
     color_mode: str = "sign"
 
 
@@ -106,10 +120,21 @@ def run_generation(params: GenerationParams) -> GenerationResult:
         params.method,
         params.moment,
         axis=params.axis,
+        layer_direction=params.layer_direction,
         layer_tolerance=params.layer_tolerance,
+        fractional_layers=params.fractional_layers,
         cutoff=params.cutoff,
         allow_frustrated=params.allow_frustrated,
         q_vector=params.q_vector,
+        afm_type=params.afm_type,
+        up_species=params.up_species,
+        down_species=params.down_species,
+        anion_species=params.anion_species or None,
+        anion_cutoff=params.anion_cutoff,
+        up_coordination=params.up_coordination,
+        down_coordination=params.down_coordination,
+        coordination_tolerance=params.coordination_tolerance,
+        seed=params.seed,
     )
     block = render_dm_init_spin(
         spins,
@@ -124,6 +149,8 @@ def run_generation(params: GenerationParams) -> GenerationResult:
         cutoff=params.cutoff,
         axis=params.axis,
         layer_tolerance=params.layer_tolerance,
+        fractional_layers=params.fractional_layers,
+        layer_direction=params.layer_direction,
     )
     return GenerationResult(
         structure=structure,
@@ -293,12 +320,23 @@ class DesktopApp:
         self.method_var = tk.StringVar(value="layer")
         self.moment_var = tk.StringVar(value="0.5")
         self.axis_var = tk.StringVar(value="z")
+        self.layer_direction_var = tk.StringVar(value="")
+        self.fractional_layers_var = tk.BooleanVar(value=False)
         self.auto_cutoff_var = tk.BooleanVar(value=True)
         self.cutoff_var = tk.StringVar(value="3.2")
         self.tolerance_var = tk.StringVar(value="0.25")
         self.slab_var = tk.BooleanVar(value=False)
         self.q_vector_var = tk.StringVar(value="0.5 0.5 0.5")
+        self.afm_type_var = tk.StringVar(value="custom")
         self.allow_frustrated_var = tk.BooleanVar(value=False)
+        self.up_species_var = tk.StringVar(value="")
+        self.down_species_var = tk.StringVar(value="")
+        self.anion_species_var = tk.StringVar(value="")
+        self.anion_cutoff_var = tk.StringVar(value="auto")
+        self.up_coordination_var = tk.StringVar(value="6")
+        self.down_coordination_var = tk.StringVar(value="4")
+        self.coordination_tolerance_var = tk.StringVar(value="0")
+        self.seed_var = tk.StringVar(value="0")
         self.color_mode_var = tk.StringVar(value="spin sign")
         self.live_update_var = tk.BooleanVar(value=True)
         self.mode_var = tk.StringVar(value="generation mode")
@@ -306,8 +344,25 @@ class DesktopApp:
 
     def _build_controls(self) -> None:
         ttk = self.ttk
-        panel = ttk.Frame(self.root, padding=10)
-        panel.grid(row=0, column=0, sticky="nsew")
+        container = ttk.Frame(self.root)
+        container.grid(row=0, column=0, sticky="nsew")
+        container.columnconfigure(0, weight=1)
+        container.rowconfigure(0, weight=1)
+        canvas = self.tk.Canvas(container, width=410, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        panel = ttk.Frame(canvas, padding=10)
+        panel_window = canvas.create_window((0, 0), window=panel, anchor="nw")
+        panel.bind(
+            "<Configure>",
+            lambda _event: canvas.configure(scrollregion=canvas.bbox("all")),
+        )
+        canvas.bind(
+            "<Configure>",
+            lambda event: canvas.itemconfigure(panel_window, width=event.width),
+        )
         panel.columnconfigure(1, weight=1)
 
         ttk.Label(panel, text="Structure").grid(row=0, column=0, sticky="w")
@@ -321,17 +376,17 @@ class DesktopApp:
         row = 2
         row = self._entry_row(panel, row, "Magnetic species", self.species_var)
         row = self._combo_row(panel, row, "Method", self.method_var, _METHODS)
-        ttk.Label(panel, text="Moment magnitude").grid(row=row, column=0, sticky="w")
-        ttk.Spinbox(
-            panel,
-            textvariable=self.moment_var,
-            from_=0.0,
-            to=20.0,
-            increment=0.1,
-            width=12,
-        ).grid(row=row, column=1, sticky="ew", padx=(6, 0), pady=3)
-        row += 1
+        row = self._entry_row(
+            panel, row, "Moment (value / Element@CN=value)", self.moment_var
+        )
         row = self._combo_row(panel, row, "Layer axis", self.axis_var, ["z", "x", "y"])
+        row = self._entry_row(
+            panel, row, "Layer direction (dx dy dz)", self.layer_direction_var
+        )
+        ttk.Checkbutton(
+            panel, text="Fractional layer coordinates", variable=self.fractional_layers_var
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=3)
+        row += 1
         ttk.Checkbutton(
             panel, text="Automatic first-shell cutoff", variable=self.auto_cutoff_var
         ).grid(row=row, column=0, columnspan=2, sticky="w", pady=3)
@@ -340,12 +395,30 @@ class DesktopApp:
         self.cutoff_entry = ttk.Entry(panel, textvariable=self.cutoff_var)
         self.cutoff_entry.grid(row=row, column=1, sticky="ew", padx=(6, 0), pady=3)
         row += 1
-        row = self._entry_row(panel, row, "Layer tolerance (Å)", self.tolerance_var)
+        row = self._entry_row(
+            panel,
+            row,
+            "Layer tolerance — Å (fractional units with --fractional-layers)",
+            self.tolerance_var,
+        )
         ttk.Checkbutton(panel, text="Slab (periodic xy)", variable=self.slab_var).grid(
             row=row, column=0, columnspan=2, sticky="w", pady=3
         )
         row += 1
         row = self._entry_row(panel, row, "q-vector", self.q_vector_var)
+        row = self._combo_row(
+            panel, row, "AFM type preset", self.afm_type_var, ["custom", "A", "C", "G"]
+        )
+        row = self._entry_row(panel, row, "Up species", self.up_species_var)
+        row = self._entry_row(panel, row, "Down species", self.down_species_var)
+        row = self._entry_row(panel, row, "Anion species (blank=auto)", self.anion_species_var)
+        row = self._entry_row(panel, row, "Anion cutoff (Å or auto)", self.anion_cutoff_var)
+        row = self._entry_row(panel, row, "Up coordination", self.up_coordination_var)
+        row = self._entry_row(panel, row, "Down coordination", self.down_coordination_var)
+        row = self._entry_row(
+            panel, row, "Coordination tolerance", self.coordination_tolerance_var
+        )
+        row = self._entry_row(panel, row, "Random seed", self.seed_var)
         ttk.Checkbutton(
             panel,
             text="Allow frustrated heuristic",
@@ -469,11 +542,22 @@ class DesktopApp:
             self.method_var,
             self.moment_var,
             self.axis_var,
+            self.layer_direction_var,
+            self.fractional_layers_var,
             self.auto_cutoff_var,
             self.cutoff_var,
             self.tolerance_var,
             self.slab_var,
             self.q_vector_var,
+            self.afm_type_var,
+            self.up_species_var,
+            self.down_species_var,
+            self.anion_species_var,
+            self.anion_cutoff_var,
+            self.up_coordination_var,
+            self.down_coordination_var,
+            self.coordination_tolerance_var,
+            self.seed_var,
             self.allow_frustrated_var,
             self.color_mode_var,
         )
@@ -508,8 +592,22 @@ class DesktopApp:
             value for value in self.species_var.get().replace(",", " ").split() if value
         )
         method = self.method_var.get()
+        layer_direction: tuple[float, float, float] | None = None
+        direction_text = self.layer_direction_var.get().strip()
+        if method == "layer" and direction_text:
+            direction_values = [
+                float(value) for value in direction_text.replace(",", " ").split()
+            ]
+            if len(direction_values) != 3:
+                raise ValueError("layer direction must contain exactly three numbers")
+            layer_direction = (
+                direction_values[0],
+                direction_values[1],
+                direction_values[2],
+            )
         q_vector: tuple[float, float, float] | None = None
-        if method == "propagation-vector":
+        afm_type = self.afm_type_var.get()
+        if method == "propagation-vector" and afm_type == "custom":
             values = [
                 float(value)
                 for value in self.q_vector_var.get().replace(",", " ").split()
@@ -517,6 +615,26 @@ class DesktopApp:
             if len(values) != 3:
                 raise ValueError("q-vector must contain exactly three numbers")
             q_vector = (values[0], values[1], values[2])
+        selected_afm_type = (
+            afm_type if method == "propagation-vector" and afm_type != "custom" else None
+        )
+        def split_words(text: str) -> tuple[str, ...]:
+            return tuple(
+                value for value in text.replace(",", " ").split() if value
+            )
+        if method == "by-coordination":
+            up_coordination = tuple(
+                int(value) for value in split_words(self.up_coordination_var.get())
+            )
+            down_coordination = tuple(
+                int(value) for value in split_words(self.down_coordination_var.get())
+            )
+            coordination_tolerance = int(self.coordination_tolerance_var.get())
+        else:
+            up_coordination = (6,)
+            down_coordination = (4,)
+            coordination_tolerance = 0
+        seed = int(self.seed_var.get()) if method == "random" else 0
         cutoff: str | float = (
             "auto" if self.auto_cutoff_var.get() else float(self.cutoff_var.get())
         )
@@ -524,13 +642,24 @@ class DesktopApp:
             structure_path=self.structure_path,
             magnetic_species=species,
             method=method,
-            moment=str(float(self.moment_var.get())),
+            moment=self.moment_var.get().strip(),
             axis=self.axis_var.get(),
+            layer_direction=layer_direction,
+            fractional_layers=self.fractional_layers_var.get(),
             cutoff=cutoff,
             layer_tolerance=float(self.tolerance_var.get()),
             slab=self.slab_var.get(),
             q_vector=q_vector,
+            afm_type=selected_afm_type,
             allow_frustrated=self.allow_frustrated_var.get(),
+            up_species=split_words(self.up_species_var.get()),
+            down_species=split_words(self.down_species_var.get()),
+            anion_species=split_words(self.anion_species_var.get()),
+            anion_cutoff=self.anion_cutoff_var.get().strip() or "auto",
+            up_coordination=up_coordination,
+            down_coordination=down_coordination,
+            coordination_tolerance=coordination_tolerance,
+            seed=seed,
             color_mode=_COLOR_MODES[self.color_mode_var.get()],
         )
 

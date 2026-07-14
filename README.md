@@ -65,6 +65,9 @@ siesta-afm patch examples/input.fdf \
 - `neighbor-bipartite`: PBC 최소 이미지 최근접 그래프를 만들고 두 sublattice를 색칠합니다.
 - `propagation-vector`: `sign(cos(2π q·r + phase))`로 부호를 정합니다.
 - `manual-groups`: `--up-atoms`, `--down-atoms` 또는 YAML `--group-file`을 사용합니다.
+- `by-species`: 서로 다른 원소 sublattice를 `--up-species`와 `--down-species`로 나눕니다.
+- `by-coordination`: 자기 원자의 첫 anion shell 배위수로 Td/Oh sublattice를 나눕니다.
+- `random`: `--seed`로 재현 가능한 무작위 초기 부호를 만듭니다. 물리적 자기질서 모델은 아닙니다.
 
 예:
 
@@ -88,9 +91,20 @@ siesta-afm generate structure.cif \
   --up-atoms 2,5,8,11 \
   --down-atoms 3,6,9,12 \
   --moment 0.5
+
+siesta-afm generate spinel.cif \
+  --magnetic-species Fe \
+  --method by-coordination \
+  --anion-species O \
+  --up-coordination 6 --down-coordination 4 \
+  --moment Fe@6=4.0 Fe@4=3.0
 ```
 
-`--moment 0.5`는 모든 선택 원소에 같은 크기를 쓰고, `--moment Cu=0.5 Ni=1.0`은 원소별 값을 씁니다. `--site-moment-file moments.csv`로 원자별 값을 덮어쓸 수 있습니다. CSV에는 최소 `atom_index,moment` 열이 필요하고, 선택적으로 `element,oxidation_state` 열을 둘 수 있습니다.
+`--moment 0.5`는 모든 선택 원소에 같은 크기를 쓰고, `--moment Cu=0.5 Ni=1.0`은 원소별 값을 씁니다. `Element@CN=value`는 같은 원소의 서로 다른 배위 환경을 구분합니다. 적용 우선순위는 site CSV > `Element@CN` > `Element` > 전역 값입니다. `--site-moment-file moments.csv`의 CSV에는 최소 `atom_index,moment` 열이 필요하고, 선택적으로 `element,oxidation_state` 열을 둘 수 있습니다.
+
+`by-species`의 up/down 합집합은 `--magnetic-species`와 정확히 같아야 합니다. 이 방법은 Ni/Co처럼 원소가 다른 sublattice에는 적합하지만, 같은 원소가 Td와 Oh 자리를 모두 차지하는 inverse spinel은 구분하지 못하므로 `by-coordination`을 사용해야 합니다. `by-coordination`은 O, S, Se, Te, N, F, Cl 중 구조에 하나만 존재하면 anion을 자동 감지하며, 여러 후보가 있으면 `--anion-species`를 요구합니다. 기본 분류는 up CN=6, down CN=4이고 `--anion-cutoff`, `--coordination-tolerance`로 조정할 수 있습니다.
+
+Propagation vector의 q는 입력 cell의 fractional 좌표입니다. supercell에서는 같은 물리적 주기를 나타내도록 q를 축소해야 합니다. A/C/G preset은 각각 `--afm-type A`, `C`, `G`로 선택하며, 사용자 `--q-vector`와 동시에 쓸 수 없습니다. NiO의 (111) AFM-II처럼 축과 평행하지 않은 층은 `--method layer --layer-direction 1 1 1`로 생성합니다.
 
 YAML 설정은 `--moment-config moments.yaml`로 읽습니다.
 
@@ -171,10 +185,15 @@ python -m siesta_afm.gui
 siesta-afm-gui
 ```
 
-GUI는 구조 파일 선택, 자기 원소/방법/moment/cutoff/layer 설정, 회전·확대 가능한 3D
-미리보기, graph 분석과 DM.InitSpin 미리보기를 제공합니다. 파라미터 변경은 400 ms
+GUI는 구조 파일 선택, 자기 원소/방법/moment/cutoff/layer 설정, species·coordination
+sublattice, A/C/G preset과 임의 layer 방향, 회전·확대 가능한 3D 미리보기,
+graph 분석과 DM.InitSpin 미리보기를 제공합니다. 파라미터 변경은 400 ms
 디바운스로 자동 반영되며 `Live update`를 끌 수 있습니다. 기존 스핀 파일도 현재 구조
 위에서 열어 볼 수 있습니다.
+
+CLI의 `analyze`에 대응하는 분석은 별도 버튼이 아니라 생성/실시간 갱신 때 자동으로
+실행되며 오른쪽 `Analysis` 탭에 거리 shell, cutoff, 연결성, 이분성 및 layer 수로
+표시됩니다.
 
 Export에서는 DM.InitSpin 블록, 원본을 덮어쓰지 않는 패치된 SIESTA 입력, initial
 magmom이 포함된 XYZ/CIF 구조를 저장할 수 있습니다. CLI가 기준 과학 구현이며 GUI

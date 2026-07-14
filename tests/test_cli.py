@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from siesta_afm.cli import main
+from siesta_afm.cli import build_parser, main
 from siesta_afm.io import parse_dm_init_spin
 
 
@@ -160,3 +160,49 @@ def test_plot_value_color_mode_and_sign_color_warning(
     assert code == 0
     assert output.is_file()
     assert "ignored in value color mode" in captured.err
+
+
+def test_q_vector_and_afm_type_are_mutually_exclusive() -> None:
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "generate",
+                "structure.cif",
+                "--magnetic-species",
+                "Ni",
+                "--method",
+                "propagation-vector",
+                "--moment",
+                "1",
+                "--q-vector",
+                "0.5",
+                "0.5",
+                "0.5",
+                "--afm-type",
+                "G",
+            ]
+        )
+
+
+def test_layer_axis_and_direction_are_mutually_exclusive() -> None:
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "generate",
+                "structure.cif",
+                "--magnetic-species",
+                "Ni",
+                "--method",
+                "layer",
+                "--moment",
+                "1",
+                "--axis",
+                "z",
+                "--layer-direction",
+                "1",
+                "1",
+                "1",
+            ]
+        )

@@ -33,12 +33,26 @@ from .workflows import generate_assignment
 
 METHODS = [
     "alternating-index",
+    "random",
     "layer",
     "checkerboard",
     "neighbor-bipartite",
     "propagation-vector",
     "manual-groups",
+    "by-species",
+    "by-coordination",
 ]
+
+
+def _configure_windows_stdio() -> None:
+    """Allow scientific Unicode labels in legacy Windows console locales."""
+
+    if sys.platform != "win32":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
 
 
 def _add_input(
@@ -75,7 +89,7 @@ def _add_site_controls(
         group.add_argument(
             "--moment",
             nargs="+",
-            help="global magnitude or Element=value pairs",
+            help="global magnitude, Element=value, or Element@CN=value specifications",
         )
         group.add_argument(
             "--moment-config", help="YAML file containing a moments mapping"
@@ -92,8 +106,21 @@ def _add_neighbor_controls(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_ordering_controls(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--axis", choices=list("xyz"), default="z")
-    parser.add_argument("--layer-tolerance", type=float, default=0.25)
+    layer_group = parser.add_mutually_exclusive_group()
+    layer_group.add_argument("--axis", choices=list("xyz"), default="z")
+    layer_group.add_argument(
+        "--layer-direction",
+        type=float,
+        nargs=3,
+        metavar=("DX", "DY", "DZ"),
+        help="Cartesian layer-normal direction, e.g. 1 1 1 for NiO AFM-II",
+    )
+    parser.add_argument(
+        "--layer-tolerance",
+        type=float,
+        default=0.25,
+        help="layer clustering tolerance in Å (fractional units with --fractional-layers)",
+    )
     parser.add_argument(
         "--layer-pattern", choices=["alternating"], default="alternating"
     )
@@ -101,7 +128,21 @@ def _add_ordering_controls(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--plane", choices=["xy", "xz", "yz"], default="xy")
     _add_neighbor_controls(parser)
     parser.add_argument("--allow-frustrated", action="store_true")
-    parser.add_argument("--q-vector", type=float, nargs=3)
+    q_group = parser.add_mutually_exclusive_group()
+    q_group.add_argument(
+        "--q-vector",
+        type=float,
+        nargs=3,
+        help=(
+            "propagation vector in fractional coordinates of the input cell; "
+            "scale it when using a supercell"
+        ),
+    )
+    q_group.add_argument(
+        "--afm-type",
+        choices=["A", "C", "G"],
+        help="propagation-vector preset: A=(0,0,1/2), C=(1/2,1/2,0), G=(1/2,1/2,1/2)",
+    )
     parser.add_argument("--phase", type=float, default=0.0)
     coordinate_group = parser.add_mutually_exclusive_group()
     coordinate_group.add_argument(
@@ -118,6 +159,20 @@ def _add_ordering_controls(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--up-atoms")
     parser.add_argument("--down-atoms")
     parser.add_argument("--group-file")
+    parser.add_argument(
+        "--up-species",
+        nargs="+",
+        help=(
+            "up sublattice for by-species; inverse spinels with one element on "
+            "Td/Oh sites require by-coordination"
+        ),
+    )
+    parser.add_argument("--down-species", nargs="+")
+    parser.add_argument("--anion-species", nargs="+")
+    parser.add_argument("--anion-cutoff", default="auto")
+    parser.add_argument("--up-coordination", type=int, nargs="+", default=[6])
+    parser.add_argument("--down-coordination", type=int, nargs="+", default=[4])
+    parser.add_argument("--coordination-tolerance", type=int, default=0)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -138,6 +193,9 @@ def build_parser() -> argparse.ArgumentParser:
     _add_site_controls(generate)
     generate.add_argument("--method", choices=METHODS, required=True)
     _add_ordering_controls(generate)
+    generate.add_argument(
+        "--seed", type=int, default=0, help="random-method seed (default: 0)"
+    )
     generate.add_argument("--output")
     generate.add_argument("--write-zero-spins", action="store_true")
     generate.add_argument("--patch-input", action="store_true")
@@ -150,8 +208,16 @@ def build_parser() -> argparse.ArgumentParser:
     _add_structure_controls(analyze)
     _add_site_controls(analyze, require_moment=False)
     _add_neighbor_controls(analyze)
-    analyze.add_argument("--axis", choices=list("xyz"), default="z")
-    analyze.add_argument("--layer-tolerance", type=float, default=0.25)
+    analyze_layer_group = analyze.add_mutually_exclusive_group()
+    analyze_layer_group.add_argument("--axis", choices=list("xyz"), default="z")
+    analyze_layer_group.add_argument("--layer-direction", type=float, nargs=3)
+    analyze.add_argument(
+        "--layer-tolerance",
+        type=float,
+        default=0.25,
+        help="layer tolerance in Å (fractional units with --fractional-layers)",
+    )
+    analyze.add_argument("--fractional-layers", action="store_true")
     analyze.add_argument("--json", dest="json_output")
     analyze.set_defaults(func=_cmd_analyze)
 
@@ -241,6 +307,7 @@ def _workflow_kwargs(args: argparse.Namespace) -> dict[str, Any]:
         "adsorbate_indices": args.adsorbate_indices,
         "site_moment_file": args.site_moment_file,
         "axis": args.axis,
+        "layer_direction": args.layer_direction,
         "layer_tolerance": args.layer_tolerance,
         "fractional_layers": args.fractional_layers,
         "plane": args.plane,
@@ -248,11 +315,19 @@ def _workflow_kwargs(args: argparse.Namespace) -> dict[str, Any]:
         "neighbor_shell": args.neighbor_shell,
         "allow_frustrated": args.allow_frustrated,
         "q_vector": args.q_vector,
+        "afm_type": args.afm_type,
         "phase": args.phase,
         "fractional_coordinates": args.fractional_coordinates,
         "up_atoms": args.up_atoms,
         "down_atoms": args.down_atoms,
         "group_file": args.group_file,
+        "up_species": args.up_species,
+        "down_species": args.down_species,
+        "anion_species": args.anion_species,
+        "anion_cutoff": args.anion_cutoff,
+        "up_coordination": args.up_coordination,
+        "down_coordination": args.down_coordination,
+        "coordination_tolerance": args.coordination_tolerance,
     }
 
 
@@ -283,6 +358,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         args.magnetic_species,
         args.method,
         _moment_values(args),
+        seed=args.seed,
         **_workflow_kwargs(args),
     )
     for warning in assignment.warnings:
@@ -351,6 +427,8 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         neighbor_shell=args.neighbor_shell,
         axis=args.axis,
         layer_tolerance=args.layer_tolerance,
+        fractional_layers=args.fractional_layers,
+        layer_direction=args.layer_direction,
     )
     print(format_analysis(report))
     if args.json_output:
@@ -547,6 +625,7 @@ def _cmd_collect_results(args: argparse.Namespace) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    _configure_windows_stdio()
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

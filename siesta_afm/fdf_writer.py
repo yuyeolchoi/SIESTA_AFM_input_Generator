@@ -34,10 +34,19 @@ def render_dm_init_spin(
     ]
     preferred = [
         ("axis", "Axis"),
+        ("layer_direction", "Layer direction"),
         ("plane", "Plane"),
         ("cutoff", "Neighbor cutoff"),
+        ("anion_species", "Anion species"),
+        ("anion_cutoff", "Anion cutoff"),
+        ("up_species", "Up species"),
+        ("down_species", "Down species"),
+        ("up_coordination", "Up coordination"),
+        ("down_coordination", "Down coordination"),
+        ("afm_type", "AFM type"),
         ("q_vector", "Propagation vector"),
         ("layer_tolerance", "Layer tolerance"),
+        ("seed", "Random seed"),
         ("heuristic", "Heuristic"),
     ]
     for key, label in preferred:

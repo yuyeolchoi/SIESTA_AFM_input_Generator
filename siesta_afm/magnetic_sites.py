@@ -64,25 +64,49 @@ def select_magnetic_sites(
 
 def parse_moment_arguments(
     values: Sequence[str] | str,
-) -> tuple[float | None, dict[str, float]]:
-    """Parse either a global moment or element-specific ``Element=value`` pairs."""
+) -> tuple[float | None, dict[str, float], dict[tuple[str, int], float]]:
+    """Parse global, ``Element=value``, and ``Element@CN=value`` moments."""
 
-    items = [values] if isinstance(values, str) else list(values)
+    items = (
+        [item for item in values.replace(",", " ").split() if item]
+        if isinstance(values, str)
+        else list(values)
+    )
     if not items:
         raise ValueError("--moment requires a value")
     global_moment: float | None = None
     by_element: dict[str, float] = {}
+    by_coordination: dict[tuple[str, int], float] = {}
     for item in items:
         if "=" in item:
-            element, value = item.split("=", 1)
-            if not element.strip():
+            key, value = item.split("=", 1)
+            key = key.strip()
+            if not key:
                 raise ValueError(f"invalid moment specification: {item}")
-            by_element[element.strip().lower()] = abs(float(value))
+            if "@" in key:
+                element, coordination_text = key.split("@", 1)
+                if not element.strip():
+                    raise ValueError(f"invalid moment specification: {item}")
+                try:
+                    coordination = int(coordination_text)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"coordination in moment specification must be an integer: {item}"
+                    ) from exc
+                if coordination < 0:
+                    raise ValueError(
+                        f"coordination in moment specification must be nonnegative: {item}"
+                    )
+                by_coordination[(element.strip().lower(), coordination)] = abs(
+                    float(value)
+                )
+            else:
+                by_element[key.lower()] = abs(float(value))
         else:
-            if global_moment is not None or by_element:
-                raise ValueError("a global --moment cannot be mixed with element=value")
+            if global_moment is not None:
+                raise ValueError("only one global --moment may be specified")
             global_moment = abs(float(item))
-    return global_moment, by_element
+    return global_moment, by_element, by_coordination
 
 
 def load_moment_config(path: str | Path) -> list[str]:
@@ -150,8 +174,9 @@ def resolve_moments(
     magnetic_indices: Sequence[int],
     moment_values: Sequence[str] | str,
     site_moment_file: str | Path | None = None,
+    coordinations: dict[int, int] | None = None,
 ) -> dict[int, float]:
-    global_moment, by_element = parse_moment_arguments(moment_values)
+    global_moment, by_element, by_coordination = parse_moment_arguments(moment_values)
     site_moments = (
         load_site_moments(site_moment_file, structure) if site_moment_file else {}
     )
@@ -159,16 +184,22 @@ def resolve_moments(
     for index in magnetic_indices:
         if index in site_moments:
             result[index] = site_moments[index]
-        elif global_moment is not None:
-            result[index] = global_moment
         else:
             symbol = structure.symbols[index].lower()
-            if symbol not in by_element:
+            coordination = coordinations.get(index) if coordinations is not None else None
+            if coordination is not None and (symbol, coordination) in by_coordination:
+                result[index] = by_coordination[(symbol, coordination)]
+            elif symbol in by_element:
+                result[index] = by_element[symbol]
+            elif global_moment is not None:
+                result[index] = global_moment
+            else:
                 raise ValueError(
-                    f"no initial moment specified for magnetic species "
-                    f"{structure.symbols[index]}"
+                    f"no initial moment specified for magnetic atom {index + 1} "
+                    f"({structure.symbols[index]}"
+                    + (f"@{coordination}" if coordination is not None else "")
+                    + ")"
                 )
-            result[index] = by_element[symbol]
     return result
 
 
