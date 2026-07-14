@@ -5,8 +5,8 @@ __pycache__/
 .venv/
 build/
 dist/
-afm_spin.fdf
-input_afm.fdf
-afm_pattern.png
-analysis.json
+/afm_spin.fdf
+/input_afm.fdf
+/afm_pattern.png
+/analysis.json
 
