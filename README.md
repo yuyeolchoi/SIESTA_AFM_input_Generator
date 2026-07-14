@@ -159,9 +159,10 @@ siesta-afm collect-results siesta_afm_jobs
 python -m pip install -e ".[gui]"
 ```
 
-Windows에서는 저장소 루트의 `run_gui.bat`를 더블클릭하면 됩니다. 런처는
-`.venv\Scripts\python.exe`를 먼저 사용하고, 없으면 PATH의 `python`을 사용합니다.
-Streamlit이 설치되지 않은 경우 설치 명령을 표시한 채 창을 유지합니다.
+Windows에서는 저장소 루트의 `run_gui.bat`를 더블클릭하면 브라우저가 아닌 Tkinter
+데스크톱 창이 열립니다. 런처는 `.venv\Scripts\python.exe`를 먼저 사용하고, 없으면
+PATH의 `python`을 사용합니다. Tkinter 또는 matplotlib를 사용할 수 없으면 설치 명령을
+표시한 채 창을 유지합니다. Streamlit은 필요하지 않습니다.
 
 터미널에서는 다음 두 진입점이 동일한 GUI를 실행합니다.
 
@@ -170,8 +171,14 @@ python -m siesta_afm.gui
 siesta-afm-gui
 ```
 
-GUI는 구조 업로드, 자기 원소/방법/moment/cutoff/layer 설정, graph 분석,
-up/down 표, FDF 미리보기와 다운로드를 제공합니다. CLI가 기준 구현입니다.
+GUI는 구조 파일 선택, 자기 원소/방법/moment/cutoff/layer 설정, 회전·확대 가능한 3D
+미리보기, graph 분석과 DM.InitSpin 미리보기를 제공합니다. 파라미터 변경은 400 ms
+디바운스로 자동 반영되며 `Live update`를 끌 수 있습니다. 기존 스핀 파일도 현재 구조
+위에서 열어 볼 수 있습니다.
+
+Export에서는 DM.InitSpin 블록, 원본을 덮어쓰지 않는 패치된 SIESTA 입력, initial
+magmom이 포함된 XYZ/CIF 구조를 저장할 수 있습니다. CLI가 기준 과학 구현이며 GUI
+컨트롤러도 같은 코어 함수를 사용합니다.
 
 ## 입력과 인덱스 보존
 
