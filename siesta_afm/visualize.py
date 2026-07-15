@@ -13,6 +13,28 @@ from .neighbors import detect_bonds
 from .structure import Structure
 
 
+def _spin_category(spins: Mapping[int, float], index: int) -> str:
+    if index not in spins or np.isclose(spins[index], 0.0):
+        return "zero"
+    if spins[index] > 0:
+        return "up"
+    if spins[index] < 0:
+        return "down"
+    return "zero"
+
+
+def element_spin_counts(
+    structure: Structure, spins: Mapping[int, float]
+) -> dict[str, tuple[int, int, int]]:
+    """Return per-element ``(up, down, zero/unassigned)`` spin counts."""
+
+    counts = {element: [0, 0, 0] for element in dict.fromkeys(structure.symbols)}
+    category_index = {"up": 0, "down": 1, "zero": 2}
+    for index, element in enumerate(structure.symbols):
+        counts[element][category_index[_spin_category(spins, index)]] += 1
+    return {element: tuple(values) for element, values in counts.items()}
+
+
 def classify_spin_indices(
     structure: Structure,
     spins: Mapping[int, float],
@@ -20,42 +42,19 @@ def classify_spin_indices(
 ) -> tuple[list[int], list[int], list[int]]:
     """Return nonmagnetic/zero, spin-up, and spin-down atom indices."""
 
-    nonmagnetic = [
-        index
-        for index in range(len(structure))
-        if (
-            index not in spins
-            or np.isclose(spins[index], 0.0)
-            or (
-                visible_spin_elements is not None
-                and structure.symbols[index] not in visible_spin_elements
-            )
-        )
-    ]
-    up = [
-        index
-        for index, value in spins.items()
-        if (
-            value > 0
-            and 0 <= index < len(structure)
-            and (
-                visible_spin_elements is None
-                or structure.symbols[index] in visible_spin_elements
-            )
-        )
-    ]
-    down = [
-        index
-        for index, value in spins.items()
-        if (
-            value < 0
-            and 0 <= index < len(structure)
-            and (
-                visible_spin_elements is None
-                or structure.symbols[index] in visible_spin_elements
-            )
-        )
-    ]
+    nonmagnetic: list[int] = []
+    up: list[int] = []
+    down: list[int] = []
+    for index, element in enumerate(structure.symbols):
+        category = _spin_category(spins, index)
+        if visible_spin_elements is not None and element not in visible_spin_elements:
+            category = "zero"
+        if category == "up":
+            up.append(index)
+        elif category == "down":
+            down.append(index)
+        else:
+            nonmagnetic.append(index)
     return nonmagnetic, up, down
 
 

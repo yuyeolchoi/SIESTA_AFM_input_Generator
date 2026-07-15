@@ -7,6 +7,7 @@ from siesta_afm.structure import Structure
 from siesta_afm.visualize import (
     classify_spin_indices,
     create_spin_figure,
+    element_spin_counts,
     plot_spin_pattern,
 )
 
@@ -29,6 +30,34 @@ def test_spin_element_filter_keeps_hidden_elements_as_nonmagnetic() -> None:
 
     assert classify_spin_indices(structure, spins, {"Ni"}) == ([1, 2], [0], [])
     assert classify_spin_indices(structure, spins, None) == ([], [0, 2], [1])
+
+
+def test_element_spin_counts_includes_zero_and_unassigned_elements() -> None:
+    structure = Structure(
+        ["Ni", "Ni", "Co", "Co", "O", "O", "O"],
+        np.zeros((7, 3)),
+        np.eye(3),
+        (False, False, False),
+    )
+    spins = {0: 2.0, 1: 1.0, 2: -3.0, 3: 0.0}
+
+    counts = element_spin_counts(structure, spins)
+
+    assert counts == {
+        "Ni": (2, 0, 0),
+        "Co": (0, 1, 1),
+        "O": (0, 0, 3),
+    }
+    nonmagnetic, up, down = classify_spin_indices(structure, spins)
+    for element, expected in counts.items():
+        indices = {
+            index for index, symbol in enumerate(structure.symbols) if symbol == element
+        }
+        assert expected == (
+            len(indices.intersection(up)),
+            len(indices.intersection(down)),
+            len(indices.intersection(nonmagnetic)),
+        )
 
 
 def test_plot_with_explicit_zero_spin_writes_png(tmp_path: Path) -> None:

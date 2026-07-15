@@ -413,8 +413,10 @@ opened on top of the current structure. The preview shows atom indices automatic
 for structures with at most 60 atoms and hides them for larger structures; `Show atom
 indices` can override that choice for the currently loaded structure. The preview also
 provides one spin-visibility checkbox per element plus `Show bonds` and a bond-radius
-scale. Unchecking an element hides only its spin color and arrow, not its atom marker;
-bond display is enabled by default only for structures with at most 60 atoms.
+scale. After generation or opening a spin file, each element checkbox shows its assigned
+up, down, and zero/unassigned site counts. These counts stay unchanged when the checkbox
+is toggled; unchecking an element hides only its spin color and arrow, not its atom
+marker. Bond display is enabled by default only for structures with at most 60 atoms.
 
 After generation, the `Sites` tab lists every magnetic atom in input order with its
 element, CN, sublattice, sign, and moment. Its footer shows `n_up`, `n_down`,

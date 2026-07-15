@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from ..io import read_structure
 from ..structure import Structure
 from ..validation import format_analysis, format_validation
-from ..visualize import create_spin_figure
+from ..visualize import create_spin_figure, element_spin_counts
 from .controllers import (
     GenerationParams,
     GenerationResult,
@@ -136,6 +136,7 @@ class DesktopApp:
         self.method_option_frames: dict[str, Any] = {}
         self.spin_element_vars: dict[str, Any] = {}
         self.spin_element_checkbuttons: dict[str, Any] = {}
+        self.spin_element_labels: dict[str, Any] = {}
         self._coordination_fallback: str | None = None
         self._coordination_use_note: str | None = None
         self._pane_width_initialized = False
@@ -1432,10 +1433,12 @@ class DesktopApp:
             widget.destroy()
         self.spin_element_vars.clear()
         self.spin_element_checkbuttons.clear()
+        self.spin_element_labels.clear()
         self.ttk.Label(self.spin_elements_frame, text="Show spin for").grid(
             row=0, column=0, sticky="w"
         )
-        for column, element in enumerate(_element_counts(structure), start=1):
+        for offset, element in enumerate(_element_counts(structure)):
+            column = 1 + 2 * offset
             variable = self.tk.BooleanVar(value=True)
             checkbutton = self.ttk.Checkbutton(
                 self.spin_elements_frame,
@@ -1444,8 +1447,19 @@ class DesktopApp:
                 command=self._preview_display_options_changed,
             )
             checkbutton.grid(row=0, column=column, sticky="w", padx=(6, 0))
+            label = self.ttk.Label(self.spin_elements_frame, text="")
+            label.grid(row=0, column=column + 1, sticky="w", padx=(2, 0))
             self.spin_element_vars[element] = variable
             self.spin_element_checkbuttons[element] = checkbutton
+            self.spin_element_labels[element] = label
+
+    def _update_spin_element_summary(self, spins: Mapping[int, float]) -> None:
+        if self.current_structure is None:
+            return
+        counts = element_spin_counts(self.current_structure, spins)
+        for element, label in self.spin_element_labels.items():
+            n_up, n_down, n_zero = counts[element]
+            label.configure(text=f"↑{n_up} ↓{n_down} ·{n_zero}")
 
     def _preview_display_kwargs(self) -> dict[str, object]:
         show_bonds = self.show_bonds_var.get()
@@ -1804,6 +1818,7 @@ class DesktopApp:
                 color_mode=params.color_mode,
                 **self._preview_display_kwargs(),
             )
+            self._update_spin_element_summary(result.spins)
             self._restore_camera(figure, camera)
         except Exception as exc:
             self.status_var.set(f"Preview not updated: {exc}")
@@ -1869,6 +1884,7 @@ class DesktopApp:
                 color_mode=_COLOR_MODES[self.color_mode_var.get()],
                 **self._preview_display_kwargs(),
             )
+            self._update_spin_element_summary(loaded.spins)
             self._restore_camera(figure, camera)
         except Exception as exc:
             self.status_var.set(f"Spin file not opened: {exc}")
@@ -1911,6 +1927,7 @@ class DesktopApp:
                 color_mode=_COLOR_MODES[self.color_mode_var.get()],
                 **self._preview_display_kwargs(),
             )
+            self._update_spin_element_summary(self.current_spins)
             self._restore_camera(figure, camera)
             self._replace_figure(figure)
         except Exception as exc:

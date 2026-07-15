@@ -715,23 +715,20 @@ def test_element_spin_checkboxes_rerender_with_real_tk(
         root.update()
 
         assert set(app.spin_element_checkbuttons) == {"Cu", "O"}
+        assert set(app.spin_element_labels) == {"Cu", "O"}
         assert all(
             widget.winfo_ismapped()
             for widget in app.spin_element_checkbuttons.values()
         )
+        assert all(
+            label.cget("text") == "" for label in app.spin_element_labels.values()
+        )
         assert app.show_bonds_var.get() is True
 
-        generated = gui.run_generation(
-            gui.GenerationParams(
-                structure_path=ROOT / "examples" / "CuO_bulk.cif",
-                magnetic_species=("Cu",),
-                method="layer",
-                moment="0.5",
-            )
-        )
-        app.current_result = generated
-        app.current_structure = generated.structure
-        app.current_spins = generated.spins
+        app._generate(show_dialog=False)
+        root.update()
+        assert app.current_result is not None
+        assert all(label.cget("text") for label in app.spin_element_labels.values())
 
         from siesta_afm.gui import app as gui_app
 
@@ -743,11 +740,13 @@ def test_element_spin_checkboxes_rerender_with_real_tk(
             return original(*args, **kwargs)
 
         monkeypatch.setattr(gui_app, "create_spin_figure", record_create)
+        cu_summary = app.spin_element_labels["Cu"].cget("text")
         app.spin_element_checkbuttons["Cu"].invoke()
         root.update()
 
         assert app.spin_element_vars["Cu"].get() is False
         assert visible_calls == [{"O"}]
+        assert app.spin_element_labels["Cu"].cget("text") == cu_summary
         assert app.figure is not None
         assert app.spin_element_checkbuttons["Cu"].winfo_ismapped()
     finally:
