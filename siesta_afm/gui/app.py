@@ -290,10 +290,13 @@ class DesktopApp:
         ttk.Label(
             table_frame,
             text=(
-                "Double-click use, label, value, or role to edit. CN and count "
-                "are read-only. In by-coordination mode, unchecking one "
-                "coordination site keeps the element selected; set moment 0 or "
-                "use --exclude-atoms to fully exclude those atoms."
+                "Double-click use, label, value, or role to edit (row must be "
+                "checked). Label edits apply only when Method is "
+                "by-coordination; role edits only when Method is by-species. "
+                "CN and count are computed from the structure and read-only. "
+                "In by-coordination mode, unchecking one coordination site "
+                "keeps the element selected; set moment 0 or use "
+                "--exclude-atoms to fully exclude those atoms."
             ),
             foreground="#666666",
             wraplength=530,
@@ -1270,11 +1273,27 @@ class DesktopApp:
             if self._coordination_use_note:
                 self.status_var.set(self._coordination_use_note)
             return
+        if name == "CN":
+            self.status_var.set(
+                "CN is computed from the structure's geometry and cannot be "
+                "edited directly."
+            )
+            return
         if name == "label" and self.method_var.get() != "by-coordination":
+            self.status_var.set(
+                "Label is only editable when Method is set to by-coordination."
+            )
             return
         if name == "role" and self.method_var.get() != "by-species":
+            self.status_var.set(
+                "Role is only editable when Method is set to by-species."
+            )
             return
         if name not in {"label", "value", "role"} or not row.use:
+            if name in {"label", "value", "role"} and not row.use:
+                self.status_var.set(
+                    "Check 'use' for this row before editing it."
+                )
             return
         bbox = self.magnetization_tree.bbox(item, column)
         if not bbox:
