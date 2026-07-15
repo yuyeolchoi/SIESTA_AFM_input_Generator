@@ -188,7 +188,27 @@ For `by-species`, the union of up/down must exactly match `--magnetic-species`. 
 In the inverse-spinel command above, the default coordination sublattices produce
 Ni(Oh)=+2 μB, Co(Td)=−2 μB, and low-spin Co(Oh)=0. Using one `Co=value`
 for both CN=4 and CN=6 sites is allowed but now emits a warning because it cannot
-represent those two Co sublattices independently.
+represent those two Co sublattices independently. The Co(Oh)=0 choice is
+consistent with the literature assignment of octahedral Co³⁺ as low-spin and
+diamagnetic.
+
+The experimental basis is Zhu et al.,
+[“Electronic structure and magnetic properties of spinel NiCo2O4 epitaxial thin
+films,” *Scientific Reports* **5**, 15201 (2015)](https://doi.org/10.1038/srep15201).
+Their XAS/XMCD study describes ferrimagnetic inverse-spinel NiCo₂O₄ (`Fd-3m`,
+Curie temperature 673 K) with high-spin Co²⁺/Co³⁺, but no Ni, on tetrahedral
+Td(A) sites and high-spin Ni²⁺/Ni³⁺ mixed with low-spin, diamagnetic Co³⁺
+(`S=0`) on octahedral Oh(B) sites. Its magnetic and transport behavior reflects
+competition between antiferromagnetic super-exchange and ferromagnetic,
+conducting double-exchange as the growth-dependent Ni³⁺ concentration changes,
+rather than a simple two-sublattice AFM picture.
+
+`by-coordination` separates sublattices only by coordination number (Td/Oh). It
+cannot distinguish oxidation or spin states mixed within the same coordination
+site, such as Ni²⁺ versus Ni³⁺ or Co³⁺ HS versus LS. To represent known
+oxidation-state-specific sites, assign atom-by-atom moments with
+`--site-moment-file`, or group the atoms by oxidation state in the structure and
+treat those groups separately.
 
 The Co₃O₄ example uses the public-domain structure data from [COD 1538531](https://www.crystallography.net/cod/1538531.html) (Roth, 1964). Its Co coordination distribution is 8 atoms with Td CN=4 and 16 atoms with Oh CN=6.
 
@@ -235,25 +255,78 @@ When the graph splits into two or more connected components, only the alternatin
 
 `validate` checks for duplicate / out-of-range indices, nonzero spin on atoms that are not a selected magnetic element, up/down counts, and the net spin. When `--structure` is given, it also computes the nearest-neighbor antiparallel fraction (`AFM score`), connected components, and the per-layer distribution.
 
-## Multiple candidates and SIESTA job arrays
+## Comparing magnetic states by total energy
+
+Use `make-input` + `enumerate` + `prepare-array` + `collect-results` to compare
+initial magnetic states while keeping the calculation settings fixed:
+
+1. Run `make-input` once to create a complete base input containing the
+   structure, basis, pseudopotential declarations, DFT+U, k-grid, and SCF
+   settings. Its initial spin pattern can be arbitrary because it will be
+   replaced.
+2. Run `enumerate --methods ...` to create distinct spin-pattern candidates.
+   The output FDF fragments contain the candidate `DM.InitSpin` blocks.
+3. Pass the complete base input and candidate directory to `prepare-array`.
+   Internally, `patch_fdf_text` changes only the `Spin polarized` control and
+   `DM.InitSpin` block in each job's copy of the base input. Structure and all
+   other calculation settings therefore remain identical across the array.
+4. Run SIESTA from each generated `RUN.fdf` on the cluster; launching SIESTA is
+   outside this tool's scope.
+5. Run `collect-results` to write `results.csv`. Among rows with
+   `scf_converged=True`, the state with the lowest `total_energy` is the leading
+   candidate. When several energies are close—as is common for competing
+   metastable NiCo₂O₄ states—report the complete ranking and final magnetic
+   diagnostics instead of selecting one arbitrarily.
+
+This repository's Co₃O₄ COD fixture gives an executable workflow example. The
+uniform values used by `enumerate` keep moment magnitudes defined for both
+methods; the coordination-specific spin in `base_input.fdf` is only a placeholder
+and is replaced in every job.
 
 ```bash
-siesta-afm enumerate structure.cif \
-  --magnetic-species Cu \
-  --moment 0.5 \
-  --methods layer,checkerboard,frustrated \
-  --n-configs 8 \
-  --output-dir afm_configs
+siesta-afm make-input examples/Co3O4_spinel_COD1538531.cif \
+  --magnetic-species Co --method by-coordination \
+  --moment Co@4=3.0 Co@6=0.0 --output base_input.fdf
 
-siesta-afm prepare-array examples/input.fdf \
-  --configs afm_configs \
-  --template input_setting.fdf \
-  --output-dir siesta_afm_jobs
+siesta-afm enumerate examples/Co3O4_spinel_COD1538531.cif \
+  --magnetic-species Co --moment Co=3.0 Co@4=3.0 Co@6=3.0 \
+  --methods by-coordination,frustrated --n-configs 2 \
+  --output-dir afm_candidates
 
-siesta-afm collect-results siesta_afm_jobs
+siesta-afm prepare-array base_input.fdf \
+  --configs afm_candidates --output-dir siesta_jobs
+
+# ... run each siesta_jobs/*/RUN.fdf with SIESTA on the cluster ...
+
+siesta-afm collect-results siesta_jobs
 ```
 
-`enumerate` removes identical patterns and, by default, treats a global sign inversion as the same candidate. Use `--keep-global-spin-inversion` to keep the two inversions separate. The `manifest.csv` records the method, up/down counts, net spin, and AFM score.
+`enumerate` is appropriate for topologically different arrangements such as
+`--methods by-coordination,layer,frustrated`. It varies method and attempt seed;
+it does **not** sweep moment magnitudes or Hubbard U. It removes identical
+patterns and, by default, identifies a global up/down inversion as the same
+candidate. Such an inversion has the same energy in a collinear calculation by
+time-reversal symmetry, so it normally should not be run separately;
+`--keep-global-spin-inversion` is available only when both conventions are
+specifically needed.
+
+If oxidation and spin states are themselves uncertain, build separate spin
+files—for example, call `generate` or `make-input` once with Co(Oh)=0 (LS) and
+once with nonzero Co(Oh) (HS). Copy those files, plus any enumerated candidates,
+into one configuration directory; give every file a unique `config_id` and file
+name; and merge or write `manifest.csv` with this exact schema:
+
+```csv
+config_id,method,n_up,n_down,net_spin,afm_score,file
+```
+
+Each row describes one spin file; use labels such as `by-coordination-ls` and
+`by-coordination-hs` in `method`, and preserve or recompute the counts, net spin,
+and AFM score for that file. `prepare-array` can then patch all of them into the
+same base input. A Hubbard-U sweep is different: because U belongs to the base
+calculation settings, make a separate base input and job array for each U. For
+per-atom oxidation-state assignments, `--site-moment-file` is safer than relying
+on coordination alone.
 
 `collect-results` reads energy, final net spin, per-atom Mulliken/Hirshfeld spin, sign-retention fraction, collapse, and convergence markers from the common SIESTA `.out`/`.log` representations in each folder and writes `results.csv`. Different SIESTA versions may use different output wording, which can require extending the regular expressions.
 
