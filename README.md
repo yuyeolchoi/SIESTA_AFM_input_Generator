@@ -1,10 +1,12 @@
 # siesta-afm
 
-`siesta-afm`은 CIF, XYZ, POSCAR/CONTCAR, SIESTA XV 및 FDF 구조에서 자기성 원자를 선택하고 SIESTA용 `%block DM.InitSpin` 초기 스핀 배열을 만드는 Python CLI입니다. 입력 원자 순서를 바꾸지 않으며 SIESTA 출력 인덱스는 항상 1부터 시작합니다.
+English · **[한국어](README.ko.md)**
 
-## 설치
+`siesta-afm` is a Python CLI that selects magnetic atoms from CIF, XYZ, POSCAR/CONTCAR, SIESTA XV, and FDF structures and builds a `%block DM.InitSpin` initial-spin arrangement for SIESTA. It never reorders the input atoms, and the SIESTA output indices are always one-based.
 
-Python 3.10 이상이 필요합니다.
+## Installation
+
+Python 3.10 or newer is required.
 
 ```bash
 python -m venv .venv
@@ -13,13 +15,13 @@ python -m venv .venv
 python -m pip install -e ".[test]"
 ```
 
-산화수 추정, 시각화, GUI는 각각 선택 의존성입니다.
+Oxidation-state guessing, visualization, and the GUI are separate optional dependencies.
 
 ```bash
 python -m pip install -e ".[oxidation,plot,gui,yaml]"
 ```
 
-## 빠른 시작
+## Quick start
 
 ```bash
 siesta-afm analyze examples/CuO_111_slab.cif \
@@ -42,12 +44,9 @@ siesta-afm plot examples/CuO_111_slab.cif \
   --output afm_pattern.png --slab
 ```
 
-`plot`은 기본적으로 스핀 부호를 빨강/파랑으로 표시합니다. 서로 다른 site moment를
-연속 색으로 비교하려면 `--color-mode value`를 사용합니다. 이 모드에서는 0을 중심으로
-대칭인 색 범위와 `initial spin (μB)` 컬러바가 추가되며, `--up-color`와
-`--down-color`는 무시됩니다.
+By default `plot` shows the spin sign in red/blue. To compare different site moments on a continuous color scale, use `--color-mode value`. That mode adds a zero-centered symmetric color range and an `initial spin (μB)` colorbar, and `--up-color` / `--down-color` are ignored.
 
-기존 SIESTA 입력에 결과를 삽입하려면:
+To insert the result into an existing SIESTA input:
 
 ```bash
 siesta-afm patch examples/input.fdf \
@@ -55,22 +54,22 @@ siesta-afm patch examples/input.fdf \
   --output input_afm.fdf
 ```
 
-`--in-place`를 지정하지 않으면 원본 FDF를 덮어쓰지 않습니다. `--backup`을 함께 사용하면 원본 옆에 `.bak` 파일을 만듭니다.
+Without `--in-place`, the original FDF is never overwritten. Adding `--backup` writes a `.bak` copy next to the original.
 
-## 생성 방법
+## Generation methods
 
-- `alternating-index`: 선택된 자기성 원자 목록 안에서만 `+ - + -`를 배정합니다.
-- `layer`: `--axis` 방향 좌표를 `--layer-tolerance`로 묶고 층마다 부호를 교대합니다.
-- `checkerboard`: `--plane xy|xz|yz` 평면 최근접 그래프를 이분 색칠합니다.
-- `neighbor-bipartite`: PBC 최소 이미지 최근접 그래프를 만들고 두 sublattice를 색칠합니다.
-- `graph-coloring`: DSATUR proper coloring으로 최대 k개 부격자 후보를 만들고 색별 collinear spin을 매핑합니다.
-- `propagation-vector`: `sign(cos(2π q·r + phase))`로 부호를 정합니다.
-- `manual-groups`: `--up-atoms`, `--down-atoms` 또는 YAML `--group-file`을 사용합니다.
-- `by-species`: 서로 다른 원소 sublattice를 `--up-species`와 `--down-species`로 나눕니다.
-- `by-coordination`: 자기 원자의 첫 anion shell 배위수로 Td/Oh sublattice를 나눕니다.
-- `random`: `--seed`로 재현 가능한 무작위 초기 부호를 만듭니다. 물리적 자기질서 모델은 아닙니다.
+- `alternating-index`: assigns `+ - + -` within the selected magnetic-atom list only.
+- `layer`: groups coordinates along `--axis` using `--layer-tolerance` and alternates the sign per layer.
+- `checkerboard`: two-colors the in-plane nearest-neighbor graph of the `--plane xy|xz|yz` plane.
+- `neighbor-bipartite`: builds the PBC minimum-image nearest-neighbor graph and colors the two sublattices.
+- `graph-coloring`: uses DSATUR proper coloring to build up to k sublattice candidates and maps a collinear spin to each color.
+- `propagation-vector`: sets the sign from `sign(cos(2π q·r + phase))`.
+- `manual-groups`: uses `--up-atoms`, `--down-atoms`, or a YAML `--group-file`.
+- `by-species`: splits distinct-element sublattices with `--up-species` and `--down-species`.
+- `by-coordination`: splits Td/Oh sublattices by each magnetic atom's first anion-shell coordination number.
+- `random`: produces reproducible random initial signs with `--seed`. This is not a physical magnetic-ordering model.
 
-예:
+Examples:
 
 ```bash
 siesta-afm generate structure.cif \
@@ -106,17 +105,15 @@ siesta-afm generate examples/Co3O4_spinel_COD1538531.cif \
   --moment Co@4=3.0 Co@6=0.5
 ```
 
-`--moment 0.5`는 모든 선택 원소에 같은 크기를 쓰고, `--moment Cu=0.5 Ni=1.0`은 원소별 값을 씁니다. `Element@CN=value`는 같은 원소의 서로 다른 배위 환경을 구분합니다. 적용 우선순위는 site CSV > `Element@CN` > `Element` > 전역 값입니다. `--site-moment-file moments.csv`의 CSV에는 최소 `atom_index,moment` 열이 필요하고, 선택적으로 `element,oxidation_state` 열을 둘 수 있습니다.
+`--moment 0.5` applies the same magnitude to every selected element, while `--moment Cu=0.5 Ni=1.0` sets per-element values. `Element@CN=value` distinguishes different coordination environments of the same element. The resolution priority is site CSV > `Element@CN` > `Element` > global value. The CSV given to `--site-moment-file moments.csv` requires at least `atom_index,moment` columns and may optionally include `element,oxidation_state` columns.
 
-`by-species`의 up/down 합집합은 `--magnetic-species`와 정확히 같아야 합니다. 이 방법은 Ni/Co처럼 원소가 다른 sublattice에는 적합하지만, 같은 원소가 Td와 Oh 자리를 모두 차지하는 inverse spinel은 구분하지 못하므로 `by-coordination`을 사용해야 합니다. `by-coordination`은 O, S, Se, Te, N, F, Cl 중 구조에 하나만 존재하면 anion을 자동 감지하며, 여러 후보가 있으면 `--anion-species`를 요구합니다. 같은 basis anion의 서로 다른 주기 이미지도 각각 별도 이웃으로 세며, 기본 분류는 up CN=6, down CN=4입니다. `--anion-cutoff`, `--coordination-tolerance`로 판정을 조정할 수 있습니다.
+For `by-species`, the union of up/down must exactly match `--magnetic-species`. That method suits distinct-element sublattices such as Ni/Co, but it cannot separate an inverse spinel in which one element occupies both Td and Oh sites — use `by-coordination` there. `by-coordination` auto-detects the anion when exactly one of O, S, Se, Te, N, F, Cl is present, and requires `--anion-species` when several candidates exist. It counts distinct periodic images of the same basis anion as separate neighbors, and the default classification is up CN=6, down CN=4. Use `--anion-cutoff` and `--coordination-tolerance` to tune the decision.
 
-Co₃O₄ 예제는 [COD 1538531](https://www.crystallography.net/cod/1538531.html)
-(Roth, 1964)의 퍼블릭 도메인 구조 데이터를 사용합니다. Co 배위수 분포는 Td CN=4가 8개,
-Oh CN=6이 16개입니다.
+The Co₃O₄ example uses the public-domain structure data from [COD 1538531](https://www.crystallography.net/cod/1538531.html) (Roth, 1964). Its Co coordination distribution is 8 atoms with Td CN=4 and 16 atoms with Oh CN=6.
 
-Propagation vector의 q는 입력 cell의 fractional 좌표입니다. supercell에서는 같은 물리적 주기를 나타내도록 q를 축소해야 합니다. A/C/G preset은 각각 `--afm-type A`, `C`, `G`로 선택하며, 사용자 `--q-vector`와 동시에 쓸 수 없습니다. NiO의 (111) AFM-II처럼 축과 평행하지 않은 층은 `--method layer --layer-direction 1 1 1`로 생성합니다.
+The propagation-vector `q` is in fractional coordinates of the input cell. In a supercell, `q` must be scaled down to represent the same physical periodicity. The A/C/G presets are selected with `--afm-type A`, `C`, `G` respectively and cannot be combined with a user `--q-vector`. Layers not parallel to an axis, such as NiO's (111) AFM-II, are generated with `--method layer --layer-direction 1 1 1`.
 
-YAML 설정은 `--moment-config moments.yaml`로 읽습니다.
+A YAML configuration is read with `--moment-config moments.yaml`.
 
 ```yaml
 moments:
@@ -125,50 +122,39 @@ moments:
   Co: 1.5
 ```
 
-산화수 자동 추정은 기본으로 실행하지 않습니다. 사용자가 `--guess-oxidation-states`를 명시하고 `pymatgen` 선택 의존성이 설치된 때에만 수행하며, 결과가 추정값이라는 경고를 냅니다.
+Oxidation-state guessing never runs by default. It runs only when the user passes `--guess-oxidation-states` and the optional `pymatgen` dependency is installed, and it warns that the result is an estimate.
 
-## 주기경계, slab, 흡착종
+## Periodic boundaries, slabs, and adsorbates
 
-입력 파일의 PBC를 쓰거나 명시적으로 바꿀 수 있습니다.
+You can use the input file's PBC or override it explicitly.
 
 ```bash
 --slab                 # xy periodic, z nonperiodic
---periodic-axes xy     # 같은 의미의 명시적 설정
---periodic-axes xyz    # 3차원 주기 구조
+--periodic-axes xy     # the same setting, made explicit
+--periodic-axes xyz    # fully 3D periodic structure
 ```
 
-자기성 원소는 반드시 `--magnetic-species`로 선택하므로 C, H, O, Cs 같은 흡착종은 자동으로 자기 그래프에서 빠집니다. 추가 제외 범위는 `--exclude-atoms 217-228` 또는 `--adsorbate-indices 217,218,219`로 지정합니다.
+Because magnetic elements must be selected with `--magnetic-species`, adsorbates such as C, H, O, Cs are automatically excluded from the magnetic graph. Additional exclusion ranges are specified with `--exclude-atoms 217-228` or `--adsorbate-indices 217,218,219`.
 
-## Frustrated/non-bipartite 그래프
+## Frustrated / non-bipartite graphs
 
-`neighbor-bipartite` 그래프가 이분 그래프가 아니면 프로그램은 임의의 2-sublattice 결과를 만들지 않고 오류로 끝납니다. 이 경우 layer, propagation vector, manual group 또는 다른 cutoff를 검토하십시오.
+If the `neighbor-bipartite` graph is not bipartite, the program does not fabricate an arbitrary two-sublattice result — it exits with an error. In that case, consider layer, propagation vector, manual groups, or a different cutoff.
 
-`--allow-frustrated`는 반대 부호 edge 수를 늘리는 반복 Max-Cut 휴리스틱을 명시적으로 허용합니다. 이 결과에는 다음 과학적 경고가 기록됩니다.
+`--allow-frustrated` explicitly permits an iterative Max-Cut heuristic that increases the number of opposite-sign edges. Such a result carries the following scientific warning:
 
 > The generated spin assignment is a heuristic initial state for a frustrated magnetic network. It is not guaranteed to represent the experimental magnetic ground state.
 
-그래프가 둘 이상의 connected component로 끊기면 각 성분 내부의 교대 부호만 그래프로
-결정됩니다. 성분 사이 상대 부호는 최소 원자 인덱스를 기준으로 한 결정론적 관례일 뿐
-물리적 의미가 없습니다. 이때 프로그램은 성분 수와 크기를 경고하며, 층간 초교환을
-포함하도록 `--neighbor-cutoff`를 조정하거나 `layer`/`propagation-vector` 방법을
-검토하라고 안내합니다. 비주기 방향에 홀수 자기층을 가진 layer 슬랩은 오류가 아니라
-비보상 AFM 슬랩이라는 정보성 경고를 냅니다.
+When the graph splits into two or more connected components, only the alternating sign inside each component is determined by the graph. The relative sign between components is a deterministic convention based on the lowest atom index and has no physical meaning. In that case the program warns with the component count and sizes and suggests tuning `--neighbor-cutoff` to include interlayer superexchange or considering the `layer` / `propagation-vector` methods. A layer slab with an odd number of magnetic layers along a nonperiodic direction is not an error but an informational warning that it is an uncompensated AFM slab.
 
-`graph-coloring`은 비이분 그래프에 DSATUR를 적용하는 다부격자 초기 후보 생성기입니다.
-`--max-colors` 기본값은 4이며, `--color-spins "+1,-1,0"`으로 색별 부호를 지정하거나
-`--balance-colors`로 `--moment`·원소별 moment·site moment 파일에서 해석한 실제 초기
-moment 합의 절대값이 가장 작은 색-부호 순열을 선택할 수 있습니다.
-proper coloring은 인접 원자의 동색을 피할 뿐 에너지를 최소화하지 않습니다. frustrated
-격자의 collinear 에너지 후보가 목적이면 `--allow-frustrated` max-cut이 더 적합합니다.
-`enumerate`에서는 attempt seed에 따라 색-spin 순열을 바꿔 후보를 다양화합니다.
+`graph-coloring` is a multi-sublattice initial-candidate generator that applies DSATUR to a non-bipartite graph. `--max-colors` defaults to 4, and you can assign per-color signs with `--color-spins "+1,-1,0"` or use `--balance-colors` to pick the color-sign permutation that minimizes the absolute sum of the actual initial moments resolved from `--moment`, per-element moments, or a site-moment file. A proper coloring only avoids equal colors on adjacent atoms; it does not minimize energy. If a collinear energy candidate for a frustrated lattice is the goal, `--allow-frustrated` max-cut is more appropriate. In `enumerate`, the color-spin permutation is varied by the attempt seed to diversify candidates.
 
-## 분석과 검증
+## Analysis and validation
 
-`analyze`는 자기 원자 거리 shell, 자동 cutoff, graph 크기/연결성/이분성, 층 수를 출력하며 `--json analysis.json`을 지원합니다.
+`analyze` reports magnetic-atom distance shells, the automatic cutoff, graph size / connectivity / bipartiteness, and the number of layers, and supports `--json analysis.json`.
 
-`validate`는 중복/범위 밖 인덱스, 선택 자기 원소가 아닌 원자의 nonzero spin, up/down 수, 순스핀을 검사합니다. `--structure`를 주면 최근접 edge의 antiparallel 비율(`AFM score`), 연결 성분 및 층별 분포도 계산합니다.
+`validate` checks for duplicate / out-of-range indices, nonzero spin on atoms that are not a selected magnetic element, up/down counts, and the net spin. When `--structure` is given, it also computes the nearest-neighbor antiparallel fraction (`AFM score`), connected components, and the per-layer distribution.
 
-## 여러 후보와 SIESTA 계산 배열
+## Multiple candidates and SIESTA job arrays
 
 ```bash
 siesta-afm enumerate structure.cif \
@@ -186,72 +172,59 @@ siesta-afm prepare-array examples/input.fdf \
 siesta-afm collect-results siesta_afm_jobs
 ```
 
-`enumerate`는 동일 패턴을 제거하고 기본적으로 전체 부호 반전도 같은 후보로 봅니다. `--keep-global-spin-inversion`으로 두 반전을 별도로 유지할 수 있습니다. `manifest.csv`에는 방법, up/down 수, 순스핀, AFM score가 기록됩니다.
+`enumerate` removes identical patterns and, by default, treats a global sign inversion as the same candidate. Use `--keep-global-spin-inversion` to keep the two inversions separate. The `manifest.csv` records the method, up/down counts, net spin, and AFM score.
 
-`collect-results`는 각 폴더의 일반적인 SIESTA `.out`/`.log` 표현에서 에너지, 최종 순스핀, 원자별 Mulliken/Hirshfeld spin, 부호 유지율, collapse 및 수렴 표지를 읽어 `results.csv`로 씁니다. SIESTA 버전에 따라 출력 문구가 다르면 정규식 확장이 필요할 수 있습니다.
+`collect-results` reads energy, final net spin, per-atom Mulliken/Hirshfeld spin, sign-retention fraction, collapse, and convergence markers from the common SIESTA `.out`/`.log` representations in each folder and writes `results.csv`. Different SIESTA versions may use different output wording, which can require extending the regular expressions.
 
-## GUI 실행
+## Running the GUI
 
-먼저 GUI 선택 의존성을 설치합니다.
+First install the GUI optional dependencies.
 
 ```bash
 python -m pip install -e ".[gui]"
 ```
 
-Windows에서는 저장소 루트의 `run_gui.bat`를 더블클릭하면 브라우저가 아닌 Tkinter
-데스크톱 창이 열립니다. 런처는 `.venv\Scripts\python.exe`를 먼저 사용하고, 없으면
-PATH의 `python`을 사용합니다. Tkinter 또는 matplotlib를 사용할 수 없으면 설치 명령을
-표시한 채 창을 유지합니다. Streamlit은 필요하지 않습니다.
+On Windows, double-clicking `run_gui.bat` at the repository root opens a Tkinter desktop window rather than a browser. The launcher uses `.venv\Scripts\python.exe` first, and falls back to `python` on PATH. If Tkinter or matplotlib is unavailable, it keeps the window open while showing the install command. No browser-based server is required.
 
-터미널에서는 다음 두 진입점이 동일한 GUI를 실행합니다.
+From a terminal, the following two entry points launch the same GUI.
 
 ```bash
 python -m siesta_afm.gui
 siesta-afm-gui
 ```
 
-GUI는 구조 파일 선택, 자기 원소/방법/moment/cutoff/layer 설정, species·coordination
-sublattice, A/C/G preset과 임의 layer 방향, 회전·확대 가능한 3D 미리보기,
-graph 분석과 DM.InitSpin 미리보기를 제공합니다. 파라미터 변경은 400 ms
-디바운스로 자동 반영되며 `Live update`를 끌 수 있습니다. 기존 스핀 파일도 현재 구조
-위에서 열어 볼 수 있습니다.
+The GUI provides structure-file selection; magnetic element / method / moment / cutoff / layer settings; species and coordination sublattices; the A/C/G presets and an arbitrary layer direction; a rotatable and zoomable 3D preview; and graph analysis with a DM.InitSpin preview. Parameter changes are applied automatically with a 400 ms debounce, and `Live update` can be turned off. Existing spin files can also be opened on top of the current structure.
 
-CLI의 `analyze`에 대응하는 분석은 별도 버튼이 아니라 생성/실시간 갱신 때 자동으로
-실행되며 오른쪽 `Analysis` 탭에 거리 shell, cutoff, 연결성, 이분성 및 layer 수로
-표시됩니다.
+The analysis corresponding to the CLI `analyze` is not a separate button — it runs automatically on generation and live updates and appears in the right-hand `Analysis` tab as distance shells, cutoff, connectivity, bipartiteness, and the number of layers.
 
-Export에서는 DM.InitSpin 블록, 원본을 덮어쓰지 않는 패치된 SIESTA 입력, initial
-magmom이 포함된 XYZ/CIF 구조를 저장할 수 있습니다. CLI가 기준 과학 구현이며 GUI
-컨트롤러도 같은 코어 함수를 사용합니다.
+Export can save the DM.InitSpin block, a patched SIESTA input that never overwrites the original, and an XYZ/CIF structure with the initial magmom included. The CLI is the reference scientific implementation, and the GUI controller uses the same core functions.
 
-## 입력과 인덱스 보존
+## Input and index preservation
 
-ASE가 CIF, XYZ, POSCAR/CONTCAR를 읽습니다. XV에는 ASE 실패 시 사용하는 별도 parser가 있습니다. FDF parser는 다음 block 및 재귀 `%include`를 처리합니다.
+ASE reads CIF, XYZ, and POSCAR/CONTCAR. XV has a dedicated parser used when ASE fails. The FDF parser handles the following blocks and recursive `%include`.
 
 - `ChemicalSpeciesLabel`
 - `AtomicCoordinatesAndAtomicSpecies`
 - `LatticeVectors`
 
-어떤 입력에서도 원소 또는 좌표 기준 정렬을 하지 않습니다. 내부 `ase_index`는 0-based 원래 순서이며 `siesta_index`는 같은 순서의 1-based 인덱스입니다.
+No input is ever sorted by element or by coordinate. The internal `ase_index` is the zero-based original order, and `siesta_index` is the one-based index in that same order.
 
-## 중요한 과학적 주의사항
+## Important scientific caveats
 
-1. `DM.InitSpin` 값은 초기 추정값일 뿐 최종 local magnetic moment가 아닙니다.
-2. SCF 후 spin 배열은 바뀔 수 있습니다.
-3. 두 sublattice AFM이 모든 산화물에 적합한 것은 아닙니다.
-4. CuO(111), triangular surface, spinel 구조는 frustrated magnetic network가 될 수 있습니다.
-5. 실험 또는 문헌의 magnetic ordering이 알려진 경우 그것을 우선 사용해야 합니다.
-6. 여러 AFM/FM 초기 상태를 계산하고 최종 total energy를 비교해야 합니다.
-7. U 값, basis, pseudopotential, slab termination에 따라 magnetic ground state가 달라질 수 있습니다.
+1. `DM.InitSpin` values are only an initial guess, not the final local magnetic moments.
+2. The spin arrangement can change after SCF.
+3. A two-sublattice AFM is not appropriate for every oxide.
+4. CuO(111), triangular surfaces, and spinel structures can be frustrated magnetic networks.
+5. When an experimental or literature magnetic ordering is known, it should take precedence.
+6. Multiple AFM/FM initial states should be computed and compared by final total energy.
+7. The magnetic ground state can depend on the U value, basis, pseudopotential, and slab termination.
 
-`examples/`의 작은 구조는 CLI 동작 확인용이며 수렴된 표면 계산 모델을 대신하지 않습니다.
-특히 `NiCo2O4_311_slab.cif`는 다원소 입출력 데모로, Td/Oh 배위가 구성된 실제
-spinel 구조가 아니므로 `by-coordination` 검증 모델로 사용하면 안 됩니다.
+The small structures in `examples/` are for confirming CLI behavior and do not substitute for a converged surface-calculation model. In particular, `NiCo2O4_311_slab.cif` is a multi-element input/output demo, not a real spinel structure with constructed Td/Oh coordination, so it must not be used as a `by-coordination` validation model.
 
-## 테스트
+## Tests
 
 ```bash
 python -m pytest
 ```
 
-테스트는 FDF/include/patch, 1D·square·triangle·분리 graph, slab PBC, layer clustering, ordering, 1-based writer 및 validation 오류 검출을 다룹니다.
+The tests cover FDF/include/patch, 1D / square / triangle / disconnected graphs, slab PBC, layer clustering, ordering, the one-based writer, and validation error detection.
