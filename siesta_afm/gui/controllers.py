@@ -637,6 +637,28 @@ def detect_coordination_combinations(
     )
 
 
+def coordination_numbers_from_result(
+    result: GenerationResult | SpinFileResult,
+) -> dict[int, int]:
+    """Return stored per-atom CN values for a by-coordination result."""
+
+    if (
+        not isinstance(result, GenerationResult)
+        or result.assignment.method != "by-coordination"
+    ):
+        return {}
+    values = result.assignment.metadata.get("coordination_numbers")
+    if not isinstance(values, Mapping):
+        return {}
+    coordinations: dict[int, int] = {}
+    for index, coordination in values.items():
+        try:
+            coordinations[int(index)] = int(coordination)
+        except (TypeError, ValueError):
+            continue
+    return coordinations
+
+
 def site_assignment_rows(
     result: GenerationResult | SpinFileResult,
 ) -> list[dict[str, object]]:
@@ -648,14 +670,10 @@ def site_assignment_rows(
         if isinstance(result, GenerationResult)
         else sorted(result.spins)
     )
-    coordinations = (
-        assignment.metadata.get("coordination_numbers", {}) if assignment else {}
-    )
+    coordinations = coordination_numbers_from_result(result)
     sublattices = (
         assignment.metadata.get("sublattice_classification", {}) if assignment else {}
     )
-    if not isinstance(coordinations, dict):
-        coordinations = {}
     if not isinstance(sublattices, dict):
         sublattices = {}
     rows: list[dict[str, object]] = []

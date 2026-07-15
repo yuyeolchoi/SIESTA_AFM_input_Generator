@@ -32,6 +32,37 @@ def test_spin_element_filter_keeps_hidden_elements_as_nonmagnetic() -> None:
     assert classify_spin_indices(structure, spins, None) == ([], [0, 2], [1])
 
 
+def test_coordination_filter_is_optional_and_combines_with_element_filter() -> None:
+    structure = Structure(
+        ["Co", "Co", "Ni", "Ni", "O"],
+        np.zeros((5, 3)),
+        np.eye(3),
+        (False, False, False),
+    )
+    spins = {0: 1.0, 1: -2.0, 2: 3.0, 3: -4.0, 4: 5.0}
+    coordinations = {0: 4, 1: 6, 2: 6, 3: 4}
+
+    assert classify_spin_indices(
+        structure,
+        spins,
+        coordination_numbers=coordinations,
+        visible_coordination_numbers={6},
+    ) == ([0, 3], [2, 4], [1])
+    assert classify_spin_indices(
+        structure,
+        spins,
+        coordination_numbers=None,
+        visible_coordination_numbers={6},
+    ) == ([], [0, 2, 4], [1, 3])
+    assert classify_spin_indices(
+        structure,
+        spins,
+        visible_spin_elements={"Co"},
+        coordination_numbers=coordinations,
+        visible_coordination_numbers={6},
+    ) == ([0, 2, 3, 4], [], [1])
+
+
 def test_element_spin_counts_includes_zero_and_unassigned_elements() -> None:
     structure = Structure(
         ["Ni", "Ni", "Co", "Co", "O", "O", "O"],
@@ -146,6 +177,22 @@ def test_value_color_scale_uses_only_visible_spin_elements() -> None:
         {0: 1.0, 1: -10.0},
         color_mode="value",
         visible_spin_elements={"Ni"},
+    )
+    assert figure.axes[1].get_ylim() == pytest.approx((-1.0, 1.0))
+    figure.clear()
+
+
+def test_value_color_scale_uses_only_visible_coordination_numbers() -> None:
+    pytest.importorskip("matplotlib")
+    structure = Structure(
+        ["Co", "Co"], [[0, 0, 0], [1, 0, 0]], np.eye(3), (False, False, False)
+    )
+    figure = create_spin_figure(
+        structure,
+        {0: 1.0, 1: -10.0},
+        color_mode="value",
+        coordination_numbers={0: 4, 1: 6},
+        visible_coordination_numbers={4},
     )
     assert figure.axes[1].get_ylim() == pytest.approx((-1.0, 1.0))
     figure.clear()

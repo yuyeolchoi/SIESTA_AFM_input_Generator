@@ -39,6 +39,8 @@ def classify_spin_indices(
     structure: Structure,
     spins: Mapping[int, float],
     visible_spin_elements: set[str] | None = None,
+    coordination_numbers: Mapping[int, int] | None = None,
+    visible_coordination_numbers: set[int] | None = None,
 ) -> tuple[list[int], list[int], list[int]]:
     """Return nonmagnetic/zero, spin-up, and spin-down atom indices."""
 
@@ -48,6 +50,13 @@ def classify_spin_indices(
     for index, element in enumerate(structure.symbols):
         category = _spin_category(spins, index)
         if visible_spin_elements is not None and element not in visible_spin_elements:
+            category = "zero"
+        if (
+            visible_coordination_numbers is not None
+            and coordination_numbers is not None
+            and index in coordination_numbers
+            and coordination_numbers[index] not in visible_coordination_numbers
+        ):
             category = "zero"
         if category == "up":
             up.append(index)
@@ -70,6 +79,8 @@ def plot_spin_pattern(
     down_color: str = "tab:blue",
     nonmagnetic_color: str = "0.65",
     visible_spin_elements: set[str] | None = None,
+    coordination_numbers: Mapping[int, int] | None = None,
+    visible_coordination_numbers: set[int] | None = None,
     show_bonds: bool = False,
     bond_radius_scale: float = 1.0,
 ) -> Path:
@@ -109,6 +120,8 @@ def plot_spin_pattern(
         down_color=down_color,
         nonmagnetic_color=nonmagnetic_color,
         visible_spin_elements=visible_spin_elements,
+        coordination_numbers=coordination_numbers,
+        visible_coordination_numbers=visible_coordination_numbers,
         show_bonds=show_bonds,
         bond_radius_scale=bond_radius_scale,
     )
@@ -130,6 +143,8 @@ def create_spin_figure(
     down_color: str = "tab:blue",
     nonmagnetic_color: str = "0.65",
     visible_spin_elements: set[str] | None = None,
+    coordination_numbers: Mapping[int, int] | None = None,
+    visible_coordination_numbers: set[int] | None = None,
     show_bonds: bool = False,
     bond_radius_scale: float = 1.0,
 ) -> Any:
@@ -163,7 +178,11 @@ def create_spin_figure(
                 zorder=1,
             )
     nonmagnetic, up_indices, down_indices = classify_spin_indices(
-        structure, spins, visible_spin_elements
+        structure,
+        spins,
+        visible_spin_elements,
+        coordination_numbers,
+        visible_coordination_numbers,
     )
     if nonmagnetic:
         pos = structure.positions[nonmagnetic]

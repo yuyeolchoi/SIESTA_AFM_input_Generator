@@ -34,6 +34,7 @@ from .controllers import (
     collect_or_load_results,
     complete_input_document,
     coordination_labels_from_rows,
+    coordination_numbers_from_result,
     equivalent_cli_options,
     export_complete_input,
     export_patched_input,
@@ -137,8 +138,13 @@ class DesktopApp:
         self.spin_element_vars: dict[str, Any] = {}
         self.spin_element_checkbuttons: dict[str, Any] = {}
         self.spin_element_labels: dict[str, Any] = {}
+        self.spin_coordination_vars: dict[int, Any] = {}
+        self.spin_coordination_checkbuttons: dict[int, Any] = {}
+        self.spin_coordination_widgets: list[Any] = []
+        self.spin_coordination_numbers: dict[int, int] = {}
         self._coordination_fallback: str | None = None
         self._coordination_use_note: str | None = None
+        self._sites_sort_by_cn = False
         self._pane_width_initialized = False
         self._results_pane_height_initialized = False
         self._active_scroll_canvas: Any | None = None
@@ -764,7 +770,12 @@ class DesktopApp:
             "moment": 100,
         }
         for column in columns:
-            self.sites_tree.heading(column, text=headings[column])
+            if column == "CN":
+                self.sites_tree.heading(
+                    column, text=headings[column], command=self._toggle_sites_cn_sort
+                )
+            else:
+                self.sites_tree.heading(column, text=headings[column])
             self.sites_tree.column(
                 column,
                 width=widths[column],
@@ -1402,6 +1413,7 @@ class DesktopApp:
             self._table_after_id = None
         if self.method_var.get() != "by-coordination":
             self._coordination_use_note = None
+        self._reset_spin_coordination_numbers_for_result(None)
         self._show_method_options()
         if self.current_structure is not None:
             self._refresh_magnetization_table()
@@ -1453,6 +1465,10 @@ class DesktopApp:
         self.spin_element_vars.clear()
         self.spin_element_checkbuttons.clear()
         self.spin_element_labels.clear()
+        self.spin_coordination_vars.clear()
+        self.spin_coordination_checkbuttons.clear()
+        self.spin_coordination_widgets.clear()
+        self.spin_coordination_numbers.clear()
         self.ttk.Label(self.spin_elements_frame, text="Show spin for").grid(
             row=0, column=0, sticky="w"
         )
@@ -1471,6 +1487,37 @@ class DesktopApp:
             self.spin_element_vars[element] = variable
             self.spin_element_checkbuttons[element] = checkbutton
             self.spin_element_labels[element] = label
+
+    def _reset_spin_coordination_numbers_for_result(
+        self, result: GenerationResult | SpinFileResult | None
+    ) -> None:
+        for widget in self.spin_coordination_widgets:
+            widget.destroy()
+        self.spin_coordination_vars.clear()
+        self.spin_coordination_checkbuttons.clear()
+        self.spin_coordination_widgets.clear()
+        self.spin_coordination_numbers.clear()
+        if result is None or self.method_var.get() != "by-coordination":
+            return
+        coordinations = coordination_numbers_from_result(result)
+        if not coordinations:
+            return
+        self.spin_coordination_numbers.update(coordinations)
+        heading = self.ttk.Label(self.spin_elements_frame, text="Show spin for CN")
+        heading.grid(row=1, column=0, sticky="w")
+        self.spin_coordination_widgets.append(heading)
+        for offset, coordination in enumerate(sorted(set(coordinations.values()))):
+            variable = self.tk.BooleanVar(value=True)
+            checkbutton = self.ttk.Checkbutton(
+                self.spin_elements_frame,
+                text=str(coordination),
+                variable=variable,
+                command=self._preview_display_options_changed,
+            )
+            checkbutton.grid(row=1, column=1 + offset, sticky="w", padx=(6, 0))
+            self.spin_coordination_vars[coordination] = variable
+            self.spin_coordination_checkbuttons[coordination] = checkbutton
+            self.spin_coordination_widgets.append(checkbutton)
 
     def _update_spin_element_summary(self, spins: Mapping[int, float]) -> None:
         if self.current_structure is None:
@@ -1491,9 +1538,20 @@ class DesktopApp:
             if self.spin_element_vars
             else None
         )
+        visible_coordination_numbers = (
+            {
+                coordination
+                for coordination, variable in self.spin_coordination_vars.items()
+                if variable.get()
+            }
+            if self.spin_coordination_vars
+            else None
+        )
         return {
             "show_indices": self.show_atom_indices_var.get(),
             "visible_spin_elements": visible_spin_elements,
+            "coordination_numbers": self.spin_coordination_numbers or None,
+            "visible_coordination_numbers": visible_coordination_numbers,
             "show_bonds": show_bonds,
             "bond_radius_scale": (
                 float(self.bond_radius_scale_var.get()) if show_bonds else 1.0
@@ -1830,6 +1888,7 @@ class DesktopApp:
         try:
             params = self._collect_params()
             result = run_generation(params)
+            self._reset_spin_coordination_numbers_for_result(result)
             camera = None if self._reset_camera else self._capture_camera()
             figure = create_spin_figure(
                 result.structure,
@@ -1896,6 +1955,7 @@ class DesktopApp:
                 layer_tolerance=float(self.tolerance_var.get()),
                 site_comments=self.site_comments_var.get(),
             )
+            self._reset_spin_coordination_numbers_for_result(loaded)
             camera = None if self._reset_camera else self._capture_camera()
             figure = create_spin_figure(
                 structure,
@@ -2027,7 +2087,29 @@ class DesktopApp:
                     f"{float(row['moment']):g}",
                 ),
             )
+        if self._sites_sort_by_cn:
+            self._sort_sites_tree()
         self.sites_summary_var.set(site_assignment_summary(result))
+
+    def _sort_sites_tree(self) -> None:
+        def key(item: str) -> tuple[int, ...]:
+            values = self.sites_tree.item(item, "values")
+            atom = int(values[0])
+            if not self._sites_sort_by_cn:
+                return (atom,)
+            try:
+                coordination = int(values[2])
+            except (TypeError, ValueError):
+                return (1, 0, atom)
+            return (0, coordination, atom)
+
+        items = sorted(self.sites_tree.get_children(), key=key)
+        for position, item in enumerate(items):
+            self.sites_tree.move(item, "", position)
+
+    def _toggle_sites_cn_sort(self) -> None:
+        self._sites_sort_by_cn = not self._sites_sort_by_cn
+        self._sort_sites_tree()
 
     def _set_exports_enabled(self, enabled: bool) -> None:
         state = "normal" if enabled else "disabled"

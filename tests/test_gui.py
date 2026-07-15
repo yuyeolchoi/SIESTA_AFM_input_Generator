@@ -143,6 +143,9 @@ def test_gui_controller_runs_inverse_spinel_coordination_method() -> None:
     assert sum(value > 0 for value in result.spins.values()) == 4
     assert sum(value < 0 for value in result.spins.values()) == 2
     assert "inverse spinel" in "\n".join(result.warnings)
+    assert gui.coordination_numbers_from_result(result) == (
+        result.assignment.metadata["coordination_numbers"]
+    )
 
 
 def test_coordination_site_rows_show_sign_moment_and_zero_spin() -> None:
@@ -409,6 +412,21 @@ def test_coordination_table_failure_falls_back_to_element_rows() -> None:
     ]
     assert warning is not None
     assert "could not auto-detect an anion species" in warning
+
+
+def test_coordination_fallback_reports_ambiguous_anion_candidates() -> None:
+    structure = Structure(
+        ["Cu", "O", "S"],
+        [[0, 0, 0], [1, 0, 0], [0, 1, 0]],
+        np.eye(3) * 4,
+        (False, False, False),
+    )
+    _rows, warning = gui.safe_magnetization_rows_from_structure(
+        structure, "by-coordination"
+    )
+    assert warning is not None
+    assert "multiple possible anion species were found (O, S)" in warning
+    assert "specify --anion-species" in warning
 
 
 def test_coordination_geometry_reaches_generated_comments_and_can_be_edited() -> None:
@@ -752,6 +770,144 @@ def test_element_spin_checkboxes_rerender_with_real_tk(
     finally:
         if app is not None and app.figure is not None:
             app.figure.clear()
+        root.destroy()
+
+
+def test_coordination_spin_checkboxes_combine_and_follow_method_with_real_tk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dependencies = gui._load_gui_dependencies()
+    try:
+        root = dependencies.tk.Tk()
+    except dependencies.tk.TclError:
+        pytest.skip("Tk display is unavailable")
+    app = None
+    try:
+        try:
+            root.attributes("-alpha", 0.0)
+        except dependencies.tk.TclError:
+            pass
+        app = gui.DesktopApp(root, dependencies)
+        app.live_update_var.set(False)
+        monkeypatch.setattr(
+            app.deps.filedialog,
+            "askopenfilename",
+            lambda **_kwargs: str(
+                ROOT / "tests" / "fixtures" / "inverse_spinel_coordination.cif"
+            ),
+        )
+        app.slab_var.set(True)
+        assert app._choose_structure(schedule=False)
+        app.method_var.set("by-coordination")
+        root.update()
+        app._generate(show_dialog=False)
+        root.update()
+
+        assert app.current_result is not None
+        assert set(app.spin_coordination_checkbuttons) == {4, 6}
+        assert all(variable.get() for variable in app.spin_coordination_vars.values())
+        assert all(
+            widget.winfo_ismapped()
+            for widget in app.spin_coordination_checkbuttons.values()
+        )
+
+        from siesta_afm.gui import app as gui_app
+        from siesta_afm.visualize import classify_spin_indices
+
+        original = gui_app.create_spin_figure
+        display_calls: list[dict[str, object]] = []
+
+        def record_create(*args: object, **kwargs: object) -> object:
+            display_calls.append(kwargs.copy())
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(gui_app, "create_spin_figure", record_create)
+        app.spin_coordination_checkbuttons[4].invoke()
+        root.update()
+        cn_kwargs = display_calls[-1]
+        assert cn_kwargs["visible_coordination_numbers"] == {6}
+        nonmagnetic, up, down = classify_spin_indices(
+            app.current_structure,
+            app.current_spins,
+            cn_kwargs["visible_spin_elements"],
+            cn_kwargs["coordination_numbers"],
+            cn_kwargs["visible_coordination_numbers"],
+        )
+        assert len(up) + len(down) == 4
+        assert len(nonmagnetic) == len(app.current_structure) - 4
+
+        app.spin_element_checkbuttons["Co"].invoke()
+        root.update()
+        combined_kwargs = display_calls[-1]
+        assert "Co" not in combined_kwargs["visible_spin_elements"]
+        nonmagnetic, up, down = classify_spin_indices(
+            app.current_structure,
+            app.current_spins,
+            combined_kwargs["visible_spin_elements"],
+            combined_kwargs["coordination_numbers"],
+            combined_kwargs["visible_coordination_numbers"],
+        )
+        assert len(up) + len(down) == 2
+        assert len(nonmagnetic) == len(app.current_structure) - 2
+
+        app.method_var.set("layer")
+        root.update()
+        assert app.spin_coordination_checkbuttons == {}
+        assert app.spin_coordination_vars == {}
+        assert app.spin_coordination_numbers == {}
+    finally:
+        if app is not None and app.figure is not None:
+            app.figure.clear()
+        root.destroy()
+
+
+def test_sites_cn_heading_toggles_coordination_and_atom_order() -> None:
+    dependencies = gui._load_gui_dependencies()
+    try:
+        root = dependencies.tk.Tk()
+    except dependencies.tk.TclError:
+        pytest.skip("Tk display is unavailable")
+    try:
+        try:
+            root.attributes("-alpha", 0.0)
+        except dependencies.tk.TclError:
+            pass
+        app = gui.DesktopApp(root, dependencies)
+        result = gui.run_generation(
+            gui.GenerationParams(
+                structure_path=(
+                    ROOT / "tests" / "fixtures" / "inverse_spinel_coordination.cif"
+                ),
+                magnetic_species=("Ni", "Co"),
+                method="by-coordination",
+                moment="Ni@6=2.0 Co@4=2.0 Co@6=0.0",
+                slab=True,
+                anion_species=("O",),
+            )
+        )
+        app._set_site_table(result)
+
+        def displayed_atoms() -> list[int]:
+            return [
+                int(app.sites_tree.item(item, "values")[0])
+                for item in app.sites_tree.get_children()
+            ]
+
+        atom_order = displayed_atoms()
+        assert atom_order == sorted(atom_order)
+        command = app.sites_tree.heading("CN", "command")
+        assert command
+        app.sites_tree.tk.call(command)
+        cn_rows = [
+            app.sites_tree.item(item, "values")
+            for item in app.sites_tree.get_children()
+        ]
+        assert [int(row[2]) for row in cn_rows] == sorted(
+            int(row[2]) for row in cn_rows
+        )
+        app.sites_tree.tk.call(command)
+        assert displayed_atoms() == atom_order
+    finally:
         root.destroy()
 
 

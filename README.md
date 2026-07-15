@@ -416,13 +416,17 @@ provides one spin-visibility checkbox per element plus `Show bonds` and a bond-r
 scale. After generation or opening a spin file, each element checkbox shows its assigned
 up, down, and zero/unassigned site counts. These counts stay unchanged when the checkbox
 is toggled; unchecking an element hides only its spin color and arrow, not its atom
-marker. Bond display is enabled by default only for structures with at most 60 atoms.
+marker. A `by-coordination` result also adds one checkbox per detected CN; the element
+and CN filters are combined, so a spin is visible only when both its element and CN are
+checked. CN controls are omitted for other methods and results without stored CN data.
+Bond display is enabled by default only for structures with at most 60 atoms.
 
 After generation, the `Sites` tab lists every magnetic atom in input order with its
 element, CN, sublattice, sign, and moment. Its footer shows `n_up`, `n_down`,
 `n_zero`, and the net initial moment. The spin-file viewer populates the same table,
 with CN and sublattice shown as `-` because those values are not stored in a spin
-block.
+block. Rows start in input atom order; click the `CN` column header to group them by
+ascending CN, then click it again to restore atom-index order.
 
 The analysis corresponding to the CLI `analyze` is not a separate button — it runs automatically on generation and live updates and appears in the right-hand `Analysis` tab as distance shells, cutoff, connectivity, bipartiteness, and the number of layers.
 
