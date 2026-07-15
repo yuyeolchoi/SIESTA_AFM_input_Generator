@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import shutil
 import sys
@@ -19,7 +18,6 @@ from .magnetic_sites import (
     load_moment_config,
     select_magnetic_sites,
 )
-from .neighbors import build_neighbor_graph
 from .ordering import NonBipartiteError
 from .results import collect_results, prepare_array
 from .validation import (
@@ -29,21 +27,10 @@ from .validation import (
     validate_spin_file,
 )
 from .visualize import plot_spin_pattern
-from .workflows import generate_assignment
+from .workflows import ENUMERATION_METHODS, enumerate_candidates, generate_assignment
 
 
-METHODS = [
-    "alternating-index",
-    "random",
-    "layer",
-    "checkerboard",
-    "neighbor-bipartite",
-    "graph-coloring",
-    "propagation-vector",
-    "manual-groups",
-    "by-species",
-    "by-coordination",
-]
+METHODS = list(ENUMERATION_METHODS[:-1])
 
 
 def _configure_windows_stdio() -> None:
@@ -624,14 +611,6 @@ def _cmd_plot(args: argparse.Namespace) -> int:
     return 0
 
 
-def _canonical_pattern(signs: dict[int, int], keep_inversion: bool) -> tuple[int, ...]:
-    pattern = tuple(signs[index] for index in sorted(signs))
-    if keep_inversion:
-        return pattern
-    inverse = tuple(-value for value in pattern)
-    return min(pattern, inverse)
-
-
 def _cmd_enumerate(args: argparse.Namespace) -> int:
     if args.n_configs <= 0:
         raise ValueError("--n-configs must be positive")
@@ -643,98 +622,33 @@ def _cmd_enumerate(args: argparse.Namespace) -> int:
     if unknown:
         raise ValueError(f"unsupported enumeration method: {unknown[0]}")
     structure = _read_from_args(args)
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    seen: set[tuple[int, ...]] = set()
-    manifest: list[dict[str, object]] = []
-    failures: list[str] = []
-    notices: list[str] = []
-    max_attempts = max(args.n_configs * 20, len(methods))
-    for attempt in range(max_attempts):
-        if len(manifest) >= args.n_configs:
-            break
-        method = methods[attempt % len(methods)]
-        try:
-            indices, assignment, spins = generate_assignment(
-                structure,
-                args.magnetic_species,
-                method,
-                _moment_values(args),
-                seed=attempt,
-                **_workflow_kwargs(args),
-            )
-        except (ValueError, NonBipartiteError) as exc:
-            message = f"{method}: {exc}"
-            if message not in failures:
-                failures.append(message)
+    result = enumerate_candidates(
+        structure,
+        args.magnetic_species,
+        methods,
+        _moment_values(args),
+        args.n_configs,
+        args.output_dir,
+        keep_global_spin_inversion=args.keep_global_spin_inversion,
+        site_comments=args.site_comments,
+        **_workflow_kwargs(args),
+    )
+    shortfall_notice = (
+        f"requested {args.n_configs}, but only {len(result.manifest)} distinct "
+        "patterns were found."
+    )
+    for warning in result.notices:
+        if warning == shortfall_notice:
             continue
-        key = _canonical_pattern(assignment.signs, args.keep_global_spin_inversion)
-        if key in seen:
-            continue
-        try:
-            graph, _, _ = build_neighbor_graph(
-                structure, indices, args.cutoff, neighbor_shell=args.neighbor_shell
-            )
-        except ValueError as exc:
-            message = f"{method}: {exc}"
-            if message not in failures:
-                failures.append(message)
-            continue
-        score = (
-            sum(
-                assignment.signs[left] * assignment.signs[right] < 0
-                for left, right in graph.edges
-            )
-            / graph.number_of_edges()
-            if graph.number_of_edges()
-            else 0.0
-        )
-        seen.add(key)
-        config_id = f"{len(manifest) + 1:03d}"
-        file_name = f"afm_{config_id}.fdf"
-        text = render_dm_init_spin(
-            spins,
-            method=assignment.method,
-            magnetic_species=args.magnetic_species,
-            metadata=assignment.metadata,
-            structure=structure,
-            site_comments=args.site_comments,
-        )
-        (output_dir / file_name).write_text(text, encoding="utf-8")
-        manifest.append(
-            {
-                "config_id": config_id,
-                "method": assignment.method,
-                "n_up": assignment.n_up,
-                "n_down": assignment.n_down,
-                "net_spin": sum(spins.values()),
-                "afm_score": score,
-                "file": file_name,
-            }
-        )
-        for warning in assignment.warnings:
-            if warning not in notices:
-                notices.append(warning)
-    if not manifest:
-        detail = "\n".join(failures) if failures else "no distinct patterns"
-        raise ValueError(f"no AFM configurations could be generated:\n{detail}")
-    with (output_dir / "manifest.csv").open(
-        "w", newline="", encoding="utf-8"
-    ) as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(manifest[0]))
-        writer.writeheader()
-        writer.writerows(manifest)
-    for warning in notices:
         print(f"WARNING:\n{warning}", file=sys.stderr)
-    print(f"Generated {len(manifest)} distinct configuration(s) in {output_dir}")
-    for failure in failures:
+    print(
+        f"Generated {len(result.manifest)} distinct configuration(s) in "
+        f"{Path(args.output_dir)}"
+    )
+    for failure in result.failures:
         print(f"WARNING: skipped {failure}", file=sys.stderr)
-    if len(manifest) < args.n_configs:
-        print(
-            f"WARNING: requested {args.n_configs}, but only {len(manifest)} distinct "
-            "patterns were found.",
-            file=sys.stderr,
-        )
+    if shortfall_notice in result.notices:
+        print(f"WARNING: {shortfall_notice}", file=sys.stderr)
     return 0
 
 

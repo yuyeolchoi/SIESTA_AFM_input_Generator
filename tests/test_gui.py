@@ -12,6 +12,7 @@ from siesta_afm import gui
 from siesta_afm.fdf_writer import render_dm_init_spin
 from siesta_afm.io import parse_dm_init_spin, read_structure
 from siesta_afm.structure import Structure
+from siesta_afm.workflows import EnumerationResult
 
 
 ROOT = Path(__file__).parents[1]
@@ -83,6 +84,10 @@ def test_gui_exposes_generation_methods_and_propagation_preset() -> None:
     assert {"random", "by-species", "by-coordination", "graph-coloring"}.issubset(
         gui._METHODS
     )
+    assert set(gui._BATCH_METHODS) == set(gui._METHODS) | {
+        "manual-groups",
+        "frustrated",
+    }
     result = gui.run_generation(
         gui.GenerationParams(
             structure_path=ROOT / "examples" / "CuO_bulk.cif",
@@ -207,6 +212,14 @@ def test_moment_text_is_derived_from_table_rows() -> None:
         "Ni@6=2.0 Co@4=2.0 Co@6=0.0"
     )
     assert gui.moment_text_from_rows(rows, "layer") == "Ni=2.0 Co=2.0"
+    assert gui.batch_moment_text_from_rows(
+        rows, ("layer", "by-coordination")
+    ) == (
+        "Ni=2.0 Co=2.0 Ni@6=2.0 Co@4=2.0 Co@6=0.0"
+    )
+    assert gui.batch_moment_text_from_rows(rows, ("by-coordination",)) == (
+        "Ni@6=2.0 Co@4=2.0 Co@6=0.0"
+    )
     for row in rows:
         row.value = ""
     assert gui.moment_text_from_rows(rows, "by-coordination") is None
@@ -448,6 +461,228 @@ def test_gui_controller_passes_site_moment_csv(tmp_path: Path) -> None:
     )
     assert result.spins[0] == 3.0
     assert result.spins[1] == 2.0
+
+
+def test_batch_controller_rows_and_result_sorting(tmp_path: Path) -> None:
+    enumeration = EnumerationResult(
+        manifest=[
+            {
+                "config_id": "001",
+                "method": "layer",
+                "n_up": 1,
+                "n_down": 1,
+                "net_spin": 0.0,
+                "afm_score": 1.0,
+                "file": "afm_001.fdf",
+            }
+        ],
+        failures=[],
+        notices=[],
+        written_files=[tmp_path / "afm_001.fdf"],
+        manifest_path=tmp_path / "manifest.csv",
+    )
+    assert gui.candidate_table_rows(enumeration) == [
+        ("001", "layer", "1", "1", "0", "1", "afm_001.fdf")
+    ]
+
+    rows = gui.results_table_rows(
+        [
+            {
+                "config_id": "003",
+                "total_energy": "",
+                "scf_converged": "False",
+                "status": "missing-output",
+            },
+            {
+                "config_id": "002",
+                "total_energy": -10.995,
+                "scf_converged": True,
+                "status": "ok",
+            },
+            {
+                "config_id": "001",
+                "total_energy": -11.0,
+                "scf_converged": True,
+                "status": "ok",
+            },
+        ]
+    )
+    assert [row.values[0] for row in rows] == ["001", "002", "003"]
+    assert rows[0].tags == ("near_ground",)
+    assert rows[1].tags == ("near_ground",)
+    assert rows[2].tags == ("unconverged",)
+
+
+def test_batch_prepare_and_existing_results_wrappers(tmp_path: Path) -> None:
+    base = tmp_path / "base.fdf"
+    base.write_text("SpinPolarized false\n", encoding="utf-8")
+    candidates = tmp_path / "candidates"
+    candidates.mkdir()
+    (candidates / "spin.fdf").write_text(
+        "%block DM.InitSpin\n1 1\n%endblock DM.InitSpin\n", encoding="utf-8"
+    )
+    (candidates / "manifest.csv").write_text(
+        "config_id,method,n_up,n_down,net_spin,afm_score,file\n"
+        "001,layer,1,0,1,0,spin.fdf\n",
+        encoding="utf-8",
+    )
+    jobs = tmp_path / "jobs"
+    folders = gui.prepare_job_folders(base, candidates, jobs)
+    assert [folder.name for folder in folders] == ["001_layer"]
+    assert (jobs / "folders.list").read_text(encoding="utf-8") == "001_layer\n"
+    (folders[0] / "siesta.out").write_text(
+        "siesta: E_KS(eV) = -1.5\nSCF cycle converged\n",
+        encoding="utf-8",
+    )
+    collected = gui.collect_or_load_results(jobs_dir=jobs)
+    assert collected[0]["config_id"] == "001"
+    assert collected[0]["total_energy"] == -1.5
+    assert collected[0]["scf_converged"] is True
+    assert (jobs / "results.csv").is_file()
+
+    existing = tmp_path / "results.csv"
+    existing.write_text(
+        "config_id,total_energy,scf_converged,status\n"
+        "001,-1.25,True,ok\n",
+        encoding="utf-8",
+    )
+    assert gui.collect_or_load_results(results_csv=existing) == [
+        {
+            "config_id": "001",
+            "total_energy": "-1.25",
+            "scf_converged": "True",
+            "status": "ok",
+        }
+    ]
+
+
+def test_batch_controllers_complete_workflow_without_tk(tmp_path: Path) -> None:
+    structure_path = ROOT / "examples" / "CuO_bulk.cif"
+    structure = read_structure(structure_path)
+    candidates = tmp_path / "candidates"
+    enumeration = gui.run_candidate_generation(
+        structure,
+        ("Cu",),
+        ("layer",),
+        "Cu=1",
+        1,
+        candidates,
+        cutoff="auto",
+    )
+    assert len(gui.candidate_table_rows(enumeration)) == 1
+
+    base_input = tmp_path / "base.fdf"
+    generated = gui.run_generation(
+        gui.GenerationParams(
+            structure_path=structure_path,
+            magnetic_species=("Cu",),
+            method="layer",
+            moment="1",
+        )
+    )
+    gui.export_complete_input(generated, base_input)
+    jobs = tmp_path / "jobs"
+    folders = gui.prepare_job_folders(base_input, candidates, jobs)
+    assert len(folders) == 1
+    (folders[0] / "siesta.out").write_text(
+        "siesta: E_KS(eV) = -11.25\nSCF cycle converged\n",
+        encoding="utf-8",
+    )
+
+    rows = gui.collect_or_load_results(jobs_dir=jobs)
+    displayed = gui.results_table_rows(rows)
+    assert displayed[0].values[0:2] == ("001", "-11.25")
+    assert displayed[0].values[6] == "True"
+    assert displayed[0].tags == ("near_ground",)
+
+
+def test_real_tk_buttons_complete_batch_workflow(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dependencies = gui._load_gui_dependencies()
+    try:
+        root = dependencies.tk.Tk()
+    except dependencies.tk.TclError:
+        pytest.skip("Tk display is unavailable")
+    try:
+        try:
+            root.attributes("-alpha", 0.0)
+        except dependencies.tk.TclError:
+            pass
+        app = gui.DesktopApp(root, dependencies)
+        app.live_update_var.set(False)
+        app.structure_path = ROOT / "examples" / "CuO_bulk.cif"
+        app.current_structure = read_structure(app.structure_path)
+        app.magnetization_rows = gui.magnetization_rows_from_structure(
+            app.current_structure, "layer"
+        )
+        app.method_var.set("layer")
+        app.batch_n_configs_var.set("1")
+        app.candidate_output_var.set(str(tmp_path / "candidates"))
+        app.results_notebook.select(3)
+        root.update()
+        errors: list[str] = []
+        monkeypatch.setattr(
+            app.deps.messagebox,
+            "showerror",
+            lambda _title, message: errors.append(str(message)),
+        )
+        button = app.generate_candidates_button
+        button.event_generate("<ButtonPress-1>", x=5, y=5)
+        root.update()
+        button.event_generate("<ButtonRelease-1>", x=5, y=5)
+        root.update()
+        assert not errors
+        assert (tmp_path / "candidates" / "manifest.csv").is_file()
+        assert (tmp_path / "candidates" / "afm_001.fdf").is_file()
+        assert len(app.candidate_tree.get_children()) == 1
+
+        base_input = tmp_path / "base.fdf"
+        generated = gui.run_generation(
+            gui.GenerationParams(
+                structure_path=app.structure_path,
+                magnetic_species=("Cu",),
+                method="layer",
+                moment="1",
+            )
+        )
+        gui.export_complete_input(generated, base_input)
+        jobs = tmp_path / "jobs"
+        app.base_input_var.set(str(base_input))
+        app.jobs_output_var.set(str(jobs))
+        app.batch_notebook.select(1)
+        root.update()
+        app.prepare_jobs_button.event_generate("<ButtonPress-1>", x=5, y=5)
+        root.update()
+        app.prepare_jobs_button.event_generate("<ButtonRelease-1>", x=5, y=5)
+        root.update()
+        folder = jobs / "001_layer"
+        assert (folder / "RUN.fdf").is_file()
+        assert app.job_folders_text.get("1.0", "end").strip() == "001_layer"
+
+        (folder / "siesta.out").write_text(
+            "siesta: E_KS(eV) = -11.25\nSCF cycle converged\n",
+            encoding="utf-8",
+        )
+        app.batch_notebook.select(2)
+        root.update()
+        app.collect_results_button.event_generate("<ButtonPress-1>", x=5, y=5)
+        root.update()
+        app.collect_results_button.event_generate("<ButtonRelease-1>", x=5, y=5)
+        root.update()
+        assert not errors
+        assert (jobs / "results.csv").is_file()
+        result_items = app.collected_results_tree.get_children()
+        assert len(result_items) == 1
+        values = app.collected_results_tree.item(result_items[0], "values")
+        assert values[0] == "001"
+        assert values[1] == "-11.25"
+        assert values[6] == "True"
+        assert app.collected_results_tree.item(result_items[0], "tags") == (
+            "near_ground",
+        )
+    finally:
+        root.destroy()
 
 
 def test_gui_complete_input_export_uses_shared_roundtrippable_renderer(

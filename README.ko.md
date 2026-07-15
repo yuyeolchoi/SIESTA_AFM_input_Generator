@@ -289,6 +289,22 @@ patch할 수 있습니다. Hubbard U는 베이스 계산 설정이므로 U마다
 
 `collect-results`는 각 폴더의 일반적인 SIESTA `.out`/`.log` 표현에서 에너지, 최종 순스핀, 원자별 Mulliken/Hirshfeld spin, 부호 유지율, collapse 및 수렴 표지를 읽어 `results.csv`로 씁니다. SIESTA 버전에 따라 출력 문구가 다르면 정규식 확장이 필요할 수 있습니다.
 
+### GUI에서 같은 워크플로 사용하기
+
+`Batch workflow` 탭에서 위의 후보 생성, 작업 준비, 결과 확인 단계를 같은 파일 형식으로
+실행할 수 있습니다. `Candidates`에서 여러 method와 출력 디렉터리를 선택하면 현재
+magnetization 테이블의 `--magnetic-species`와 `--moment` 값으로 후보를 만들고, 생성된
+행과 건너뛴 method의 경고를 모두 표시합니다. `manual-groups`를 쓸 때는 같은 패널에서
+기존 group 파일도 선택합니다. `Prepare jobs`에서는 먼저 `Build complete
+SIESTA input (make-input)...`으로 디스크에 저장한 완전한 FDF, `manifest.csv`가 있는 후보
+디렉터리, 작업 출력 디렉터리를 명시적으로 선택합니다. 생성된 `folders.list` 내용도 탭에
+표시됩니다.
+
+도구 밖에서 SIESTA를 실행한 뒤 `Results`에서 jobs 디렉터리를 새로 수집하거나 기존
+`results.csv`를 재수집 없이 불러올 수 있습니다. 행은 `total_energy` 오름차순이고,
+미수렴 행은 회색, 최저 에너지에서 0.01 eV 이내인 수렴 상태들은 한 그룹으로 강조됩니다.
+에너지가 근접한 후보가 여러 개여도 GUI가 하나를 자동으로 선택하지 않습니다.
+
 ## GUI 실행
 
 먼저 GUI 선택 의존성을 설치합니다.

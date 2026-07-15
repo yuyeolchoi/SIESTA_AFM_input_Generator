@@ -106,6 +106,44 @@ def test_enumerate_graph_failure_leaves_no_partial_spin_files(tmp_path: Path) ->
     assert not (output / "manifest.csv").exists()
 
 
+def test_enumerate_cli_preserves_generated_and_shortfall_messages(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    structure = tmp_path / "pair.xyz"
+    structure.write_text(
+        "2\nCu pair\nCu 0 0 0\nCu 1 0 0\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "configs"
+    assert (
+        main(
+            [
+                "enumerate",
+                str(structure),
+                "--magnetic-species",
+                "Cu",
+                "--moment",
+                "1",
+                "--methods",
+                "random",
+                "--cutoff",
+                "1.1",
+                "--n-configs",
+                "4",
+                "--output-dir",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    captured = capsys.readouterr()
+    assert captured.out == f"Generated 2 distinct configuration(s) in {output}\n"
+    assert (
+        "WARNING: requested 4, but only 2 distinct patterns were found."
+        in captured.err
+    )
+
+
 def test_generate_validate_patch_roundtrip(tmp_path: Path) -> None:
     source = ROOT / "examples" / "input.fdf"
     spin_file = tmp_path / "spin.fdf"

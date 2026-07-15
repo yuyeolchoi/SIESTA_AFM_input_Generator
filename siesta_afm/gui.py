@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -15,6 +16,7 @@ from .magnetic_sites import (
 )
 from .neighbors import classify_coordination_geometry
 from .ordering import SpinAssignment, analyze_coordination_sites
+from .results import collect_results, prepare_array
 from .structure import Structure
 from .validation import (
     ValidationReport,
@@ -24,7 +26,12 @@ from .validation import (
     validate_spins,
 )
 from .visualize import create_spin_figure, plot_spin_pattern
-from .workflows import generate_assignment
+from .workflows import (
+    ENUMERATION_METHODS,
+    EnumerationResult,
+    enumerate_candidates,
+    generate_assignment,
+)
 
 
 _GUI_INSTALL_HINT = 'python -m pip install -e ".[gui]"'
@@ -39,6 +46,28 @@ _METHODS = [
     "by-species",
     "by-coordination",
 ]
+_BATCH_METHODS = list(ENUMERATION_METHODS)
+_CANDIDATE_COLUMNS = (
+    "config_id",
+    "method",
+    "n_up",
+    "n_down",
+    "net_spin",
+    "afm_score",
+    "file",
+)
+_RESULT_COLUMNS = (
+    "config_id",
+    "total_energy",
+    "final_net_spin",
+    "sign_retention",
+    "collapsed_atoms",
+    "spin_population_source",
+    "scf_converged",
+    "geometry_converged",
+    "status",
+)
+_NEAR_GROUND_ENERGY_WINDOW_EV = 0.01
 _COLOR_MODES = {"spin sign": "sign", "spin value": "value"}
 _LEFT_PANEL_MIN_WIDTH = 600
 
@@ -115,6 +144,14 @@ class MagnetizationRow:
     atom_indices: tuple[int, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class ResultTableRow:
+    """One sorted result row plus visual tags for a Tk Treeview."""
+
+    values: tuple[str, ...]
+    tags: tuple[str, ...]
+
+
 def _element_counts(structure: Structure) -> dict[str, int]:
     counts: dict[str, int] = {}
     for symbol in structure.symbols:
@@ -178,6 +215,29 @@ def moment_text_from_rows(
         )
         values.append(f"{name}={value}")
     return " ".join(values) or None
+
+
+def batch_moment_text_from_rows(
+    rows: Sequence[MagnetizationRow], methods: Sequence[str]
+) -> str | None:
+    """Return moment specifications usable by every selected batch method.
+
+    Coordination rows can carry different values for the same element.  A mixed
+    batch therefore needs both an element fallback for ordinary methods and the
+    more specific ``Element@CN`` values used by ``by-coordination``.
+    """
+
+    element_moments = moment_text_from_rows(rows, "layer")
+    if "by-coordination" not in methods:
+        return element_moments
+    coordination_moments = moment_text_from_rows(rows, "by-coordination")
+    if all(method == "by-coordination" for method in methods):
+        return coordination_moments
+    if not coordination_moments or coordination_moments == element_moments:
+        return element_moments
+    return " ".join(
+        value for value in (element_moments, coordination_moments) if value
+    )
 
 
 def species_roles_from_rows(
@@ -602,6 +662,163 @@ def run_generation(params: GenerationParams) -> GenerationResult:
     )
 
 
+def run_candidate_generation(
+    structure: Structure,
+    magnetic_species: Sequence[str],
+    methods: Sequence[str],
+    moment: Sequence[str] | str | None,
+    n_configs: int,
+    output_dir: str | Path,
+    *,
+    keep_global_spin_inversion: bool = False,
+    site_comments: bool = True,
+    **workflow_kwargs: object,
+) -> EnumerationResult:
+    """Generate a candidate batch without importing or creating Tk."""
+
+    if not magnetic_species:
+        raise ValueError("select at least one magnetic element in the table")
+    return enumerate_candidates(
+        structure,
+        magnetic_species,
+        methods,
+        moment,
+        n_configs,
+        output_dir,
+        keep_global_spin_inversion=keep_global_spin_inversion,
+        site_comments=site_comments,
+        **workflow_kwargs,
+    )
+
+
+def candidate_table_rows(
+    result: EnumerationResult,
+) -> list[tuple[str, ...]]:
+    """Convert an enumeration result to deterministic Treeview values."""
+
+    return [
+        tuple(_display_value(row.get(column, "")) for column in _CANDIDATE_COLUMNS)
+        for row in result.manifest
+    ]
+
+
+def prepare_job_folders(
+    base_input: str | Path,
+    candidates_dir: str | Path,
+    output_dir: str | Path,
+) -> list[Path]:
+    """Prepare job folders through the same pure function used by the CLI."""
+
+    return prepare_array(base_input, candidates_dir, output_dir)
+
+
+def load_results_csv(path: str | Path) -> list[dict[str, object]]:
+    """Load an existing collection without rerunning result extraction."""
+
+    source = Path(path)
+    with source.open(newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        fields = set(reader.fieldnames or ())
+        required = {"config_id", "total_energy", "scf_converged"}
+        missing = sorted(required - fields)
+        if missing:
+            raise ValueError(
+                "results CSV is missing required column(s): " + ", ".join(missing)
+            )
+        return [dict(row) for row in reader]
+
+
+def collect_or_load_results(
+    *,
+    jobs_dir: str | Path | None = None,
+    results_csv: str | Path | None = None,
+) -> list[dict[str, object]]:
+    """Collect a jobs directory, or load a previously collected CSV."""
+
+    if results_csv:
+        return load_results_csv(results_csv)
+    if not jobs_dir:
+        raise ValueError("select a jobs directory or an existing results.csv")
+    return collect_results(jobs_dir)
+
+
+def _display_value(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "True" if value else "False"
+    if isinstance(value, float):
+        return f"{value:g}"
+    return str(value)
+
+
+def _energy_value(row: Mapping[str, object]) -> float | None:
+    value = row.get("total_energy")
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        return float(str(value))
+    except ValueError:
+        return None
+
+
+def _truthy(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "y"}
+
+
+def results_table_rows(
+    rows: Sequence[Mapping[str, object]],
+    *,
+    energy_window_ev: float = _NEAR_GROUND_ENERGY_WINDOW_EV,
+) -> list[ResultTableRow]:
+    """Sort by energy and tag converged candidates near the lowest energy.
+
+    The function deliberately marks a group only; it never chooses a winner.
+    """
+
+    if energy_window_ev < 0:
+        raise ValueError("energy window must be nonnegative")
+    ordered = sorted(
+        rows,
+        key=lambda row: (
+            _energy_value(row) is None,
+            _energy_value(row) if _energy_value(row) is not None else float("inf"),
+            str(row.get("config_id", "")),
+        ),
+    )
+    converged_energies = [
+        energy
+        for row in ordered
+        if _truthy(row.get("scf_converged"))
+        for energy in [_energy_value(row)]
+        if energy is not None
+    ]
+    minimum = min(converged_energies) if converged_energies else None
+    table_rows: list[ResultTableRow] = []
+    for row in ordered:
+        energy = _energy_value(row)
+        converged = _truthy(row.get("scf_converged"))
+        tags: list[str] = []
+        if not converged:
+            tags.append("unconverged")
+        if (
+            converged
+            and energy is not None
+            and minimum is not None
+            and energy - minimum <= energy_window_ev
+        ):
+            tags.append("near_ground")
+        table_rows.append(
+            ResultTableRow(
+                tuple(_display_value(row.get(column, "")) for column in _RESULT_COLUMNS),
+                tuple(tags),
+            )
+        )
+    return table_rows
+
+
 def load_spin_file(
     spin_path: str | Path,
     structure: Structure,
@@ -838,6 +1055,19 @@ class DesktopApp:
         self.live_update_var = tk.BooleanVar(value=True)
         self.mode_var = tk.StringVar(value="generation mode")
         self.status_var = tk.StringVar(value="Select a structure file to begin.")
+        self.batch_method_vars = {
+            method: tk.BooleanVar(value=method == "layer")
+            for method in _BATCH_METHODS
+        }
+        self.batch_n_configs_var = tk.StringVar(value="8")
+        self.batch_keep_inversion_var = tk.BooleanVar(value=False)
+        self.candidate_output_var = tk.StringVar(value="")
+        self.batch_group_file_var = tk.StringVar(value="")
+        self.base_input_var = tk.StringVar(value="")
+        self.candidates_dir_var = tk.StringVar(value="")
+        self.jobs_output_var = tk.StringVar(value="")
+        self.jobs_dir_var = tk.StringVar(value="")
+        self.results_csv_var = tk.StringVar(value="")
 
     def _build_controls(self) -> None:
         ttk = self.ttk
@@ -1192,9 +1422,12 @@ class DesktopApp:
         analysis_frame = ttk.Frame(notebook)
         sites_frame = ttk.Frame(notebook)
         spin_frame = ttk.Frame(notebook)
+        batch_frame = ttk.Frame(notebook)
         notebook.add(analysis_frame, text="Analysis")
         notebook.add(sites_frame, text="Sites")
         notebook.add(spin_frame, text="DM.InitSpin")
+        notebook.add(batch_frame, text="Batch workflow")
+        self.results_notebook = notebook
         self.analysis_text = self._readonly_text(analysis_frame)
         self.spin_text = self._readonly_text(spin_frame)
         sites_frame.columnconfigure(0, weight=1)
@@ -1244,6 +1477,8 @@ class DesktopApp:
             padding=(6, 4),
         ).grid(row=1, column=0, columnspan=2, sticky="ew")
 
+        self._build_batch_workflow(batch_frame)
+
         status = ttk.Label(
             self.root,
             textvariable=self.status_var,
@@ -1252,6 +1487,278 @@ class DesktopApp:
             padding=(6, 3),
         )
         status.grid(row=1, column=0, sticky="ew")
+
+    def _build_batch_workflow(self, parent: Any) -> None:
+        ttk = self.ttk
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
+        notebook = ttk.Notebook(parent)
+        notebook.grid(row=0, column=0, sticky="nsew")
+        candidates_tab = ttk.Frame(notebook, padding=6)
+        prepare_tab = ttk.Frame(notebook, padding=6)
+        results_tab = ttk.Frame(notebook, padding=6)
+        notebook.add(candidates_tab, text="Candidates")
+        notebook.add(prepare_tab, text="Prepare jobs")
+        notebook.add(results_tab, text="Results")
+        self.batch_notebook = notebook
+        self._build_candidates_tab(candidates_tab)
+        self._build_prepare_tab(prepare_tab)
+        self._build_collected_results_tab(results_tab)
+
+    def _build_candidates_tab(self, parent: Any) -> None:
+        ttk = self.ttk
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(2, weight=1)
+        methods = ttk.LabelFrame(parent, text="Batch candidates", padding=5)
+        methods.grid(row=0, column=0, sticky="ew")
+        for index, method in enumerate(_BATCH_METHODS):
+            ttk.Checkbutton(
+                methods,
+                text=method,
+                variable=self.batch_method_vars[method],
+            ).grid(row=index // 3, column=index % 3, sticky="w", padx=(0, 12))
+
+        controls = ttk.Frame(parent)
+        controls.grid(row=1, column=0, sticky="ew", pady=(4, 3))
+        controls.columnconfigure(4, weight=1)
+        ttk.Label(controls, text="n-configs").grid(row=0, column=0, sticky="w")
+        self.batch_n_configs_spinbox = ttk.Spinbox(
+            controls,
+            from_=1,
+            to=999,
+            width=6,
+            textvariable=self.batch_n_configs_var,
+        )
+        self.batch_n_configs_spinbox.grid(row=0, column=1, sticky="w", padx=(4, 12))
+        ttk.Checkbutton(
+            controls,
+            text="Keep global spin inversion",
+            variable=self.batch_keep_inversion_var,
+        ).grid(row=0, column=2, columnspan=3, sticky="w")
+        ttk.Label(controls, text="Output directory").grid(
+            row=1, column=0, sticky="w", pady=(3, 0)
+        )
+        ttk.Entry(controls, textvariable=self.candidate_output_var).grid(
+            row=1, column=1, columnspan=4, sticky="ew", padx=4, pady=(3, 0)
+        )
+        ttk.Button(
+            controls,
+            text="Browse...",
+            command=self._choose_candidate_output,
+        ).grid(row=1, column=5, padx=(0, 4), pady=(3, 0))
+        self.generate_candidates_button = ttk.Button(
+            controls,
+            text="Generate candidates",
+            command=self._generate_candidates,
+        )
+        self.generate_candidates_button.grid(row=1, column=6, pady=(3, 0))
+        ttk.Label(controls, text="Manual groups file").grid(
+            row=2, column=0, sticky="w", pady=(3, 0)
+        )
+        ttk.Entry(controls, textvariable=self.batch_group_file_var).grid(
+            row=2, column=1, columnspan=4, sticky="ew", padx=4, pady=(3, 0)
+        )
+        ttk.Button(
+            controls,
+            text="Browse...",
+            command=self._choose_batch_group_file,
+        ).grid(row=2, column=5, padx=(0, 4), pady=(3, 0))
+
+        table_frame = ttk.Frame(parent)
+        table_frame.grid(row=2, column=0, sticky="nsew")
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
+        self.candidate_tree = ttk.Treeview(
+            table_frame,
+            columns=_CANDIDATE_COLUMNS,
+            show="headings",
+            height=5,
+        )
+        candidate_widths = {
+            "config_id": 65,
+            "method": 130,
+            "n_up": 55,
+            "n_down": 65,
+            "net_spin": 75,
+            "afm_score": 80,
+            "file": 115,
+        }
+        for column in _CANDIDATE_COLUMNS:
+            self.candidate_tree.heading(column, text=column)
+            self.candidate_tree.column(
+                column,
+                width=candidate_widths[column],
+                minwidth=50,
+                anchor="center",
+                stretch=column in {"method", "file"},
+            )
+        candidate_y = ttk.Scrollbar(
+            table_frame, orient="vertical", command=self.candidate_tree.yview
+        )
+        candidate_x = ttk.Scrollbar(
+            table_frame, orient="horizontal", command=self.candidate_tree.xview
+        )
+        self.candidate_tree.configure(
+            yscrollcommand=candidate_y.set, xscrollcommand=candidate_x.set
+        )
+        self.candidate_tree.grid(row=0, column=0, sticky="nsew")
+        candidate_y.grid(row=0, column=1, sticky="ns")
+        candidate_x.grid(row=1, column=0, sticky="ew")
+        self.candidate_messages = self.tk.Text(parent, height=3, wrap="word")
+        self.candidate_messages.grid(row=3, column=0, sticky="ew", pady=(3, 0))
+        self.candidate_messages.configure(state="disabled")
+
+    def _build_prepare_tab(self, parent: Any) -> None:
+        ttk = self.ttk
+        parent.columnconfigure(1, weight=1)
+        parent.rowconfigure(4, weight=1)
+        ttk.Label(
+            parent,
+            text=(
+                "Select a complete make-input FDF, a directory containing "
+                "manifest.csv, and a destination for the job folders."
+            ),
+            wraplength=650,
+        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 5))
+        self._batch_path_row(
+            parent,
+            1,
+            "Base input",
+            self.base_input_var,
+            self._choose_base_input,
+        )
+        self._batch_path_row(
+            parent,
+            2,
+            "Candidates directory",
+            self.candidates_dir_var,
+            self._choose_candidates_dir,
+        )
+        self._batch_path_row(
+            parent,
+            3,
+            "Output directory",
+            self.jobs_output_var,
+            self._choose_jobs_output,
+        )
+        self.prepare_jobs_button = ttk.Button(
+            parent, text="Prepare job folders", command=self._prepare_job_folders
+        )
+        self.prepare_jobs_button.grid(
+            row=4, column=0, columnspan=3, sticky="ew", pady=(5, 3)
+        )
+        self.job_folders_text = self.tk.Text(parent, height=9, wrap="none")
+        self.job_folders_text.grid(
+            row=5, column=0, columnspan=3, sticky="nsew", pady=(3, 0)
+        )
+        parent.rowconfigure(5, weight=1)
+        self.job_folders_text.configure(state="disabled")
+
+    def _build_collected_results_tab(self, parent: Any) -> None:
+        ttk = self.ttk
+        parent.columnconfigure(1, weight=1)
+        parent.rowconfigure(4, weight=1)
+        self._batch_path_row(
+            parent,
+            0,
+            "Jobs directory",
+            self.jobs_dir_var,
+            self._choose_jobs_dir,
+        )
+        ttk.Label(parent, text="or").grid(row=1, column=0, sticky="w")
+        self._batch_path_row(
+            parent,
+            2,
+            "Existing results.csv",
+            self.results_csv_var,
+            self._choose_results_csv,
+        )
+        self.collect_results_button = ttk.Button(
+            parent,
+            text="Collect / Load results",
+            command=self._collect_or_load_results,
+        )
+        self.collect_results_button.grid(
+            row=3, column=0, columnspan=3, sticky="ew", pady=(4, 3)
+        )
+        table_frame = ttk.Frame(parent)
+        table_frame.grid(row=4, column=0, columnspan=3, sticky="nsew")
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
+        self.collected_results_tree = ttk.Treeview(
+            table_frame,
+            columns=_RESULT_COLUMNS,
+            show="headings",
+            height=8,
+        )
+        result_widths = {
+            "config_id": 70,
+            "total_energy": 100,
+            "final_net_spin": 100,
+            "sign_retention": 100,
+            "collapsed_atoms": 105,
+            "spin_population_source": 170,
+            "scf_converged": 100,
+            "geometry_converged": 125,
+            "status": 130,
+        }
+        for column in _RESULT_COLUMNS:
+            self.collected_results_tree.heading(column, text=column)
+            self.collected_results_tree.column(
+                column,
+                width=result_widths[column],
+                minwidth=60,
+                anchor="center",
+                stretch=column in {"spin_population_source", "status"},
+            )
+        results_y = ttk.Scrollbar(
+            table_frame,
+            orient="vertical",
+            command=self.collected_results_tree.yview,
+        )
+        results_x = ttk.Scrollbar(
+            table_frame,
+            orient="horizontal",
+            command=self.collected_results_tree.xview,
+        )
+        self.collected_results_tree.configure(
+            yscrollcommand=results_y.set, xscrollcommand=results_x.set
+        )
+        self.collected_results_tree.grid(row=0, column=0, sticky="nsew")
+        results_y.grid(row=0, column=1, sticky="ns")
+        results_x.grid(row=1, column=0, sticky="ew")
+        self.collected_results_tree.tag_configure(
+            "unconverged", foreground="#777777"
+        )
+        self.collected_results_tree.tag_configure(
+            "near_ground", background="#fff3b0"
+        )
+        ttk.Label(
+            parent,
+            text=(
+                "Gray = SCF not converged. Yellow = converged candidates within "
+                f"{_NEAR_GROUND_ENERGY_WINDOW_EV:g} eV of the lowest energy; "
+                "review all highlighted states rather than selecting one automatically."
+            ),
+            wraplength=720,
+            foreground="#555555",
+        ).grid(row=5, column=0, columnspan=3, sticky="w", pady=(3, 0))
+
+    def _batch_path_row(
+        self,
+        parent: Any,
+        row: int,
+        label: str,
+        variable: Any,
+        command: Any,
+    ) -> None:
+        self.ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w")
+        self.ttk.Entry(parent, textvariable=variable).grid(
+            row=row, column=1, sticky="ew", padx=5, pady=2
+        )
+        self.ttk.Button(parent, text="Browse...", command=command).grid(
+            row=row, column=2, sticky="e"
+        )
 
     def _entry_row(self, parent: Any, row: int, label: str, variable: Any) -> int:
         self.ttk.Label(parent, text=label, wraplength=110).grid(
@@ -1611,6 +2118,224 @@ class DesktopApp:
         )
         if path:
             self.site_moment_file_var.set(path)
+
+    def _choose_candidate_output(self) -> None:
+        path = self.deps.filedialog.askdirectory(title="Candidate output directory")
+        if path:
+            self.candidate_output_var.set(path)
+
+    def _choose_batch_group_file(self) -> None:
+        path = self.deps.filedialog.askopenfilename(
+            title="Open manual groups file",
+            filetypes=[("YAML files", "*.yaml *.yml"), ("All files", "*.*")],
+        )
+        if path:
+            self.batch_group_file_var.set(path)
+
+    def _choose_base_input(self) -> None:
+        path = self.deps.filedialog.askopenfilename(
+            title="Select complete make-input FDF",
+            filetypes=[("FDF files", "*.fdf"), ("All files", "*.*")],
+        )
+        if path:
+            self.base_input_var.set(path)
+
+    def _choose_candidates_dir(self) -> None:
+        path = self.deps.filedialog.askdirectory(
+            title="Select directory containing manifest.csv"
+        )
+        if path:
+            self.candidates_dir_var.set(path)
+
+    def _choose_jobs_output(self) -> None:
+        path = self.deps.filedialog.askdirectory(title="Job folders output directory")
+        if path:
+            self.jobs_output_var.set(path)
+
+    def _choose_jobs_dir(self) -> None:
+        path = self.deps.filedialog.askdirectory(title="Select jobs directory")
+        if path:
+            self.jobs_dir_var.set(path)
+            self.results_csv_var.set("")
+
+    def _choose_results_csv(self) -> None:
+        path = self.deps.filedialog.askopenfilename(
+            title="Open existing results.csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        )
+        if path:
+            self.results_csv_var.set(path)
+            self.jobs_dir_var.set("")
+
+    @staticmethod
+    def _three_numbers(text: str, label: str) -> tuple[float, float, float]:
+        values = [float(value) for value in text.replace(",", " ").split()]
+        if len(values) != 3:
+            raise ValueError(f"{label} must contain exactly three numbers")
+        return values[0], values[1], values[2]
+
+    def _batch_workflow_kwargs(self, methods: Sequence[str]) -> dict[str, object]:
+        cutoff: str | float = (
+            "auto" if self.auto_cutoff_var.get() else float(self.cutoff_var.get())
+        )
+        layer_direction = None
+        direction_text = self.layer_direction_var.get().strip()
+        if "layer" in methods and direction_text:
+            layer_direction = self._three_numbers(direction_text, "layer direction")
+
+        q_vector = None
+        afm_type = None
+        if "propagation-vector" in methods:
+            selected_afm_type = self.afm_type_var.get()
+            if selected_afm_type == "custom":
+                q_vector = self._three_numbers(self.q_vector_var.get(), "q-vector")
+            else:
+                afm_type = selected_afm_type
+
+        up_species, down_species = species_roles_from_rows(self.magnetization_rows)
+        if "by-coordination" in methods:
+            up_coordination = tuple(
+                int(value)
+                for value in self._split_words(self.up_coordination_var.get())
+            )
+            down_coordination = tuple(
+                int(value)
+                for value in self._split_words(self.down_coordination_var.get())
+            )
+            coordination_tolerance = int(self.coordination_tolerance_var.get())
+        else:
+            up_coordination = (6,)
+            down_coordination = (4,)
+            coordination_tolerance = 0
+        if "graph-coloring" in methods:
+            max_colors = int(self.max_colors_var.get())
+            color_spins = self.color_spins_var.get().strip() or None
+            balance_colors = self.balance_colors_var.get()
+        else:
+            max_colors = 4
+            color_spins = None
+            balance_colors = False
+        return {
+            "site_moment_file": self.site_moment_file_var.get().strip() or None,
+            "axis": self.axis_var.get(),
+            "layer_direction": layer_direction,
+            "layer_tolerance": float(self.tolerance_var.get()),
+            "fractional_layers": self.fractional_layers_var.get(),
+            "cutoff": cutoff,
+            "neighbor_shell": 1,
+            "allow_frustrated": self.allow_frustrated_var.get(),
+            "q_vector": q_vector,
+            "afm_type": afm_type,
+            "up_species": up_species,
+            "down_species": down_species,
+            "anion_species": self._split_words(self.anion_species_var.get()) or None,
+            "anion_cutoff": self.anion_cutoff_var.get().strip() or "auto",
+            "up_coordination": up_coordination,
+            "down_coordination": down_coordination,
+            "coordination_tolerance": coordination_tolerance,
+            "max_colors": max_colors,
+            "color_spins": color_spins,
+            "balance_colors": balance_colors,
+            "group_file": (
+                self.batch_group_file_var.get().strip()
+                if "manual-groups" in methods
+                else None
+            ),
+            "seed_offset": int(self.seed_var.get()),
+        }
+
+    def _generate_candidates(self) -> None:
+        try:
+            if self.structure_path is None:
+                raise ValueError("select a structure file first")
+            methods = [
+                method
+                for method in _BATCH_METHODS
+                if self.batch_method_vars[method].get()
+            ]
+            if not methods:
+                raise ValueError("select at least one candidate method")
+            output_dir = self.candidate_output_var.get().strip()
+            if not output_dir:
+                raise ValueError("select a candidate output directory")
+            structure = read_structure(self.structure_path, slab=self.slab_var.get())
+            species = magnetic_species_from_rows(self.magnetization_rows)
+            result = run_candidate_generation(
+                structure,
+                species,
+                methods,
+                batch_moment_text_from_rows(self.magnetization_rows, methods),
+                int(self.batch_n_configs_var.get()),
+                output_dir,
+                keep_global_spin_inversion=self.batch_keep_inversion_var.get(),
+                site_comments=self.site_comments_var.get(),
+                **self._batch_workflow_kwargs(methods),
+            )
+        except Exception as exc:
+            self.status_var.set(f"Candidate generation failed: {exc}")
+            self.deps.messagebox.showerror("Candidate generation failed", str(exc))
+            return
+
+        for item in self.candidate_tree.get_children():
+            self.candidate_tree.delete(item)
+        for values in candidate_table_rows(result):
+            self.candidate_tree.insert("", "end", values=values)
+        diagnostics = [f"NOTICE: {notice}" for notice in result.notices]
+        diagnostics.extend(f"SKIPPED: {failure}" for failure in result.failures)
+        self._set_text(
+            self.candidate_messages,
+            "\n".join(diagnostics) or "No warnings or skipped methods.",
+        )
+        self.candidates_dir_var.set(output_dir)
+        self.status_var.set(
+            f"Generated {len(result.manifest)} candidate(s): {result.manifest_path}"
+        )
+
+    def _prepare_job_folders(self) -> None:
+        try:
+            base_input = self.base_input_var.get().strip()
+            candidates_dir = self.candidates_dir_var.get().strip()
+            output_dir = self.jobs_output_var.get().strip()
+            if not base_input or not candidates_dir or not output_dir:
+                raise ValueError(
+                    "select the base input, candidates directory, and output directory"
+                )
+            folders = prepare_job_folders(base_input, candidates_dir, output_dir)
+        except Exception as exc:
+            self.status_var.set(f"Job preparation failed: {exc}")
+            self.deps.messagebox.showerror("Job preparation failed", str(exc))
+            return
+        self._set_text(
+            self.job_folders_text,
+            "\n".join(folder.name for folder in folders) + ("\n" if folders else ""),
+        )
+        self.jobs_dir_var.set(output_dir)
+        self.results_csv_var.set("")
+        self.status_var.set(f"Prepared {len(folders)} job folder(s) in {output_dir}")
+
+    def _collect_or_load_results(self) -> None:
+        try:
+            jobs_dir = self.jobs_dir_var.get().strip() or None
+            results_csv = self.results_csv_var.get().strip() or None
+            rows = collect_or_load_results(
+                jobs_dir=jobs_dir,
+                results_csv=results_csv,
+            )
+        except Exception as exc:
+            self.status_var.set(f"Results not loaded: {exc}")
+            self.deps.messagebox.showerror("Collect / Load results failed", str(exc))
+            return
+        for item in self.collected_results_tree.get_children():
+            self.collected_results_tree.delete(item)
+        for row in results_table_rows(rows):
+            self.collected_results_tree.insert(
+                "", "end", values=row.values, tags=row.tags
+            )
+        if jobs_dir and not results_csv:
+            self.results_csv_var.set(str(Path(jobs_dir) / "results.csv"))
+        self.status_var.set(
+            f"Displayed {len(rows)} result(s), sorted by ascending total energy."
+        )
 
     def _collect_params(self) -> GenerationParams:
         if self.structure_path is None:

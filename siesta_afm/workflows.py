@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Sequence
+import csv
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Sequence
+
+from .fdf_writer import render_dm_init_spin
 
 from .magnetic_sites import (
     built_in_element_moments,
@@ -12,6 +17,7 @@ from .magnetic_sites import (
     select_magnetic_sites,
 )
 from .ordering import (
+    NonBipartiteError,
     SpinAssignment,
     alternating_index,
     by_species_ordering,
@@ -26,7 +32,34 @@ from .ordering import (
     random_ordering,
     read_group_file,
 )
+from .neighbors import build_neighbor_graph
 from .structure import Structure
+
+
+ENUMERATION_METHODS = (
+    "alternating-index",
+    "random",
+    "layer",
+    "checkerboard",
+    "neighbor-bipartite",
+    "graph-coloring",
+    "propagation-vector",
+    "manual-groups",
+    "by-species",
+    "by-coordination",
+    "frustrated",
+)
+
+
+@dataclass(slots=True)
+class EnumerationResult:
+    """Files and diagnostics produced by one candidate-enumeration run."""
+
+    manifest: list[dict[str, object]]
+    failures: list[str]
+    notices: list[str]
+    written_files: list[Path]
+    manifest_path: Path
 
 
 def generate_assignment(
@@ -290,3 +323,143 @@ def generate_assignment(
             "explicitly.",
         )
     return indices, assignment, assignment.moments(resolved_magnitudes)
+
+
+def _canonical_pattern(
+    signs: dict[int, int], keep_global_spin_inversion: bool
+) -> tuple[int, ...]:
+    pattern = tuple(signs[index] for index in sorted(signs))
+    if keep_global_spin_inversion:
+        return pattern
+    inverse = tuple(-value for value in pattern)
+    return min(pattern, inverse)
+
+
+def enumerate_candidates(
+    structure: Structure,
+    magnetic_species: Sequence[str],
+    methods: Sequence[str],
+    moment: Sequence[str] | str | None,
+    n_configs: int,
+    output_dir: str | Path,
+    *,
+    keep_global_spin_inversion: bool = False,
+    site_comments: bool = True,
+    seed_offset: int = 0,
+    **workflow_kwargs: Any,
+) -> EnumerationResult:
+    """Generate distinct candidate spin blocks and their manifest.
+
+    This is the reusable, UI-independent implementation behind the CLI and GUI.
+    Diagnostics are returned to the caller instead of being printed.
+    """
+
+    if n_configs <= 0:
+        raise ValueError("--n-configs must be positive")
+    normalized_methods = [str(item).strip() for item in methods if str(item).strip()]
+    if not normalized_methods:
+        raise ValueError("--methods must contain at least one method")
+    allowed = set(ENUMERATION_METHODS)
+    unknown = [method for method in normalized_methods if method not in allowed]
+    if unknown:
+        raise ValueError(f"unsupported enumeration method: {unknown[0]}")
+
+    destination = Path(output_dir)
+    destination.mkdir(parents=True, exist_ok=True)
+    seen: set[tuple[int, ...]] = set()
+    manifest: list[dict[str, object]] = []
+    failures: list[str] = []
+    notices: list[str] = []
+    written_files: list[Path] = []
+    max_attempts = max(n_configs * 20, len(normalized_methods))
+    for attempt in range(max_attempts):
+        if len(manifest) >= n_configs:
+            break
+        method = normalized_methods[attempt % len(normalized_methods)]
+        try:
+            indices, assignment, spins = generate_assignment(
+                structure,
+                magnetic_species,
+                method,
+                moment,
+                seed=seed_offset + attempt,
+                **workflow_kwargs,
+            )
+        except (ValueError, NonBipartiteError) as exc:
+            message = f"{method}: {exc}"
+            if message not in failures:
+                failures.append(message)
+            continue
+        key = _canonical_pattern(assignment.signs, keep_global_spin_inversion)
+        if key in seen:
+            continue
+        try:
+            graph, _, _ = build_neighbor_graph(
+                structure,
+                indices,
+                workflow_kwargs.get("cutoff", "auto"),
+                neighbor_shell=workflow_kwargs.get("neighbor_shell", 1),
+            )
+        except ValueError as exc:
+            message = f"{method}: {exc}"
+            if message not in failures:
+                failures.append(message)
+            continue
+        score = (
+            sum(
+                assignment.signs[left] * assignment.signs[right] < 0
+                for left, right in graph.edges
+            )
+            / graph.number_of_edges()
+            if graph.number_of_edges()
+            else 0.0
+        )
+        seen.add(key)
+        config_id = f"{len(manifest) + 1:03d}"
+        file_name = f"afm_{config_id}.fdf"
+        text = render_dm_init_spin(
+            spins,
+            method=assignment.method,
+            magnetic_species=magnetic_species,
+            metadata=assignment.metadata,
+            structure=structure,
+            site_comments=site_comments,
+        )
+        spin_path = destination / file_name
+        spin_path.write_text(text, encoding="utf-8")
+        written_files.append(spin_path)
+        manifest.append(
+            {
+                "config_id": config_id,
+                "method": assignment.method,
+                "n_up": assignment.n_up,
+                "n_down": assignment.n_down,
+                "net_spin": sum(spins.values()),
+                "afm_score": score,
+                "file": file_name,
+            }
+        )
+        for warning in assignment.warnings:
+            if warning not in notices:
+                notices.append(warning)
+    if not manifest:
+        detail = "\n".join(failures) if failures else "no distinct patterns"
+        raise ValueError(f"no AFM configurations could be generated:\n{detail}")
+
+    manifest_path = destination / "manifest.csv"
+    with manifest_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(manifest[0]))
+        writer.writeheader()
+        writer.writerows(manifest)
+    if len(manifest) < n_configs:
+        notices.append(
+            f"requested {n_configs}, but only {len(manifest)} distinct patterns "
+            "were found."
+        )
+    return EnumerationResult(
+        manifest=manifest,
+        failures=failures,
+        notices=notices,
+        written_files=written_files,
+        manifest_path=manifest_path,
+    )

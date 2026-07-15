@@ -330,6 +330,24 @@ on coordination alone.
 
 `collect-results` reads energy, final net spin, per-atom Mulliken/Hirshfeld spin, sign-retention fraction, collapse, and convergence markers from the common SIESTA `.out`/`.log` representations in each folder and writes `results.csv`. Different SIESTA versions may use different output wording, which can require extending the regular expressions.
 
+### The same workflow in the GUI
+
+The `Batch workflow` tab exposes the candidate, job-preparation, and result
+stages described above without changing their file formats. In `Candidates`,
+choose one or more methods and an output directory; the current magnetization
+table supplies `--magnetic-species` and `--moment`, and the generated rows plus
+all skipped-method warnings are shown in the tab. When using `manual-groups`,
+select its existing group file in the same panel. `Prepare jobs` requires an
+explicit, already saved complete FDF from `Build complete SIESTA input
+(make-input)...`, a candidate directory containing `manifest.csv`, and an
+output directory. It shows the resulting `folders.list` entries.
+
+After running SIESTA outside this tool, use `Results` either to collect a jobs
+directory or to load an existing `results.csv` without collecting again. Rows
+are sorted by ascending `total_energy`; unconverged rows are gray, and converged
+states within 0.01 eV of the lowest energy are highlighted as a group. The GUI
+does not automatically choose one of several close candidates.
+
 ## Running the GUI
 
 First install the GUI optional dependencies.
