@@ -445,6 +445,87 @@ def test_default_gui_layout_keeps_visible_inputs_wide_enough(
         root.destroy()
 
 
+def test_control_panel_mousewheel_scrolls_with_primary_actions_fixed() -> None:
+    dependencies = gui._load_gui_dependencies()
+    try:
+        root = dependencies.tk.Tk()
+    except dependencies.tk.TclError:
+        pytest.skip("Tk display is unavailable")
+    try:
+        try:
+            root.attributes("-alpha", 0.0)
+        except dependencies.tk.TclError:
+            pass
+        app = gui.DesktopApp(root, dependencies)
+        root.geometry("1050x700")
+        root.update()
+
+        before = app.controls_canvas.yview()
+        assert before[1] - before[0] < 1.0
+        app.controls_canvas.event_generate("<Enter>")
+        app.controls_canvas.event_generate("<MouseWheel>", delta=-120)
+        root.update()
+        after = app.controls_canvas.yview()
+        assert after[0] > before[0]
+
+        app.controls_canvas.yview_moveto(1.0)
+        root.update()
+        assert app.primary_actions.winfo_ismapped()
+        assert app.generate_button.winfo_ismapped()
+        assert app.complete_input_action.winfo_ismapped()
+        assert "Compare several initial spin states" in (
+            app.batch_workflow_help_label.cget("text")
+        )
+        app.controls_canvas.event_generate("<Leave>")
+    finally:
+        root.destroy()
+
+
+def test_atom_index_default_tracks_each_new_structure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dependencies = gui._load_gui_dependencies()
+    try:
+        root = dependencies.tk.Tk()
+    except dependencies.tk.TclError:
+        pytest.skip("Tk display is unavailable")
+    try:
+        try:
+            root.attributes("-alpha", 0.0)
+        except dependencies.tk.TclError:
+            pass
+        app = gui.DesktopApp(root, dependencies)
+        app.live_update_var.set(False)
+        paths = iter(
+            (
+                ROOT / "tests" / "fixtures" / "NiCo2O4_311_pristine.cif",
+                ROOT / "examples" / "CuO_bulk.cif",
+            )
+        )
+        monkeypatch.setattr(
+            app.deps.filedialog,
+            "askopenfilename",
+            lambda **_kwargs: str(next(paths)),
+        )
+
+        assert app._choose_structure(schedule=False)
+        assert app.current_structure is not None
+        assert len(app.current_structure.symbols) > gui._AUTO_SHOW_INDICES_MAX_ATOMS
+        assert app.show_atom_indices_var.get() is False
+
+        app.show_atom_indices_var.set(True)
+        app._refresh_magnetization_table()
+        assert app.show_atom_indices_var.get() is True
+
+        app.show_atom_indices_var.set(False)
+        assert app._choose_structure(schedule=False)
+        assert app.current_structure is not None
+        assert len(app.current_structure.symbols) < gui._AUTO_SHOW_INDICES_MAX_ATOMS
+        assert app.show_atom_indices_var.get() is True
+    finally:
+        root.destroy()
+
+
 def test_gui_controller_passes_site_moment_csv(tmp_path: Path) -> None:
     site_file = tmp_path / "site_moments.csv"
     site_file.write_text("atom_index,element,moment\n1,Ni,3.0\n", encoding="utf-8")

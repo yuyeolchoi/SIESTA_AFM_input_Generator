@@ -332,8 +332,10 @@ on coordination alone.
 
 ### The same workflow in the GUI
 
-The `Batch workflow` tab exposes the candidate, job-preparation, and result
-stages described above without changing their file formats. In `Candidates`,
+The `Batch workflow` tab is an optional tool for comparing multiple magnetic
+initial states by total energy; it is not required to generate a single SIESTA
+input. It exposes the candidate, job-preparation, and result stages described
+above without changing their file formats. In `Candidates`,
 choose one or more methods and an output directory; the current magnetization
 table supplies `--magnetic-species` and `--moment`, and the generated rows plus
 all skipped-method warnings are shown in the tab. When using `manual-groups`,
@@ -395,7 +397,9 @@ widgets readable at the default window size. Parameter changes still use the 400
 live-preview debounce. `Include element/CN comments in DM.InitSpin` controls the same
 output feature as CLI `--no-site-comments`; default-moment and spin-state warnings
 appear in both the status bar and `Analysis` tab. Existing spin files can also be
-opened on top of the current structure.
+opened on top of the current structure. The preview shows atom indices automatically
+for structures with at most 60 atoms and hides them for larger structures; `Show atom
+indices` can override that choice for the currently loaded structure.
 
 After generation, the `Sites` tab lists every magnetic atom in input order with its
 element, CN, sublattice, sign, and moment. Its footer shows `n_up`, `n_down`,
@@ -411,8 +415,8 @@ initial magmom included. The complete-input action displays the same convergence
 warning and uses the same renderer as `make-input`. The CLI is the reference
 scientific implementation, and the GUI controller uses the same core functions.
 For a complete runnable starting FDF, use the prominent
-`Build complete SIESTA input (make-input)...` button in `Generate / View`; the
-similarly named Export action remains available as a secondary entry point.
+`Build complete SIESTA input (make-input)...` button in the fixed `Primary actions`
+bar; the similarly named Export action remains available as a secondary entry point.
 
 ## Input and index preservation
 

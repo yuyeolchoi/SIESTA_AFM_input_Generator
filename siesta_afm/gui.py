@@ -70,6 +70,7 @@ _RESULT_COLUMNS = (
 _NEAR_GROUND_ENERGY_WINDOW_EV = 0.01
 _COLOR_MODES = {"spin sign": "sign", "spin value": "value"}
 _LEFT_PANEL_MIN_WIDTH = 600
+_AUTO_SHOW_INDICES_MAX_ATOMS = 60
 
 
 @dataclass(frozen=True, slots=True)
@@ -1052,6 +1053,7 @@ class DesktopApp:
         self.balance_colors_var = tk.BooleanVar(value=False)
         self.seed_var = tk.StringVar(value="0")
         self.color_mode_var = tk.StringVar(value="spin sign")
+        self.show_atom_indices_var = tk.BooleanVar(value=True)
         self.live_update_var = tk.BooleanVar(value=True)
         self.mode_var = tk.StringVar(value="generation mode")
         self.status_var = tk.StringVar(value="Select a structure file to begin.")
@@ -1080,21 +1082,33 @@ class DesktopApp:
         self.main_pane.add(container, weight=0)
         container.columnconfigure(0, weight=1)
         container.rowconfigure(0, weight=1)
-        canvas = self.tk.Canvas(container, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.grid(row=0, column=0, sticky="nsew")
+        self.controls_canvas = self.tk.Canvas(container, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(
+            container, orient="vertical", command=self.controls_canvas.yview
+        )
+        self.controls_canvas.configure(yscrollcommand=scrollbar.set)
+        self.controls_canvas.grid(row=0, column=0, sticky="nsew")
         scrollbar.grid(row=0, column=1, sticky="ns")
-        panel = ttk.Frame(canvas, padding=10)
-        panel_window = canvas.create_window((0, 0), window=panel, anchor="nw")
+        panel = ttk.Frame(self.controls_canvas, padding=10)
+        panel_window = self.controls_canvas.create_window(
+            (0, 0), window=panel, anchor="nw"
+        )
         panel.bind(
             "<Configure>",
-            lambda _event: canvas.configure(scrollregion=canvas.bbox("all")),
+            lambda _event: self.controls_canvas.configure(
+                scrollregion=self.controls_canvas.bbox("all")
+            ),
         )
-        canvas.bind(
+        self.controls_canvas.bind(
             "<Configure>",
-            lambda event: canvas.itemconfigure(panel_window, width=event.width),
+            lambda event: self.controls_canvas.itemconfigure(
+                panel_window, width=event.width
+            ),
         )
+        self.controls_canvas.bind("<Enter>", self._bind_controls_mousewheel)
+        self.controls_canvas.bind("<Leave>", self._unbind_controls_mousewheel)
+        panel.bind("<Enter>", self._bind_controls_mousewheel)
+        panel.bind("<Leave>", self._unbind_controls_mousewheel)
         panel.columnconfigure(0, minsize=115, weight=0)
         panel.columnconfigure(1, minsize=160, weight=1)
 
@@ -1349,55 +1363,86 @@ class DesktopApp:
         ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(6, 3))
         row += 1
 
-        actions = ttk.LabelFrame(panel, text="Generate / View", padding=6)
-        actions.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(8, 4))
-        actions.columnconfigure((0, 1), weight=1)
-        ttk.Button(actions, text="Generate", command=self._generate_explicit).grid(
-            row=0, column=0, sticky="ew", padx=(0, 3)
+        secondary_actions = ttk.LabelFrame(panel, text="Open / Export", padding=6)
+        secondary_actions.grid(
+            row=row, column=0, columnspan=2, sticky="ew", pady=(8, 4)
         )
+        secondary_actions.columnconfigure((0, 1), weight=1)
         ttk.Button(
-            actions, text="Open spin file...", command=self._open_spin_file
-        ).grid(row=0, column=1, sticky="ew", padx=(3, 0))
-        self.complete_input_action = ttk.Button(
-            actions,
-            text="Build complete SIESTA input (make-input)...",
-            command=self._export_complete_input,
-            state="disabled",
-        )
-        self.complete_input_action.grid(
-            row=1, column=0, columnspan=2, sticky="ew", pady=(7, 2)
-        )
-        ttk.Label(
-            actions,
-            text="Creates a runnable starting FDF; same as `siesta-afm make-input`.",
-            foreground="#555555",
-            wraplength=520,
-        ).grid(row=2, column=0, columnspan=2, sticky="w")
-        row += 1
-
-        exports = ttk.LabelFrame(panel, text="Export", padding=6)
-        exports.grid(row=row, column=0, columnspan=2, sticky="ew", pady=4)
-        exports.columnconfigure(0, weight=1)
+            secondary_actions,
+            text="Open spin file...",
+            command=self._open_spin_file,
+        ).grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 4))
         export_group_buttons = [
-            ttk.Button(exports, text="DM.InitSpin block...", command=self._save_spin),
             ttk.Button(
-                exports,
+                secondary_actions,
+                text="DM.InitSpin block...",
+                command=self._save_spin,
+            ),
+            ttk.Button(
+                secondary_actions,
                 text="Complete SIESTA input...",
                 command=self._export_complete_input,
             ),
             ttk.Button(
-                exports, text="Patched SIESTA input...", command=self._export_patched
+                secondary_actions,
+                text="Patched SIESTA input...",
+                command=self._export_patched,
             ),
             ttk.Button(
-                exports,
+                secondary_actions,
                 text="Structure with moments...",
                 command=self._export_structure,
             ),
         ]
-        self.export_buttons = [self.complete_input_action, *export_group_buttons]
         for number, button in enumerate(export_group_buttons):
-            button.grid(row=number, column=0, sticky="ew", pady=2)
+            button.grid(
+                row=1 + number // 2,
+                column=number % 2,
+                sticky="ew",
+                padx=(0, 3) if number % 2 == 0 else (3, 0),
+                pady=2,
+            )
             button.configure(state="disabled")
+
+        self.primary_actions = ttk.LabelFrame(
+            container, text="Primary actions", padding=6
+        )
+        self.primary_actions.grid(
+            row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=(4, 10)
+        )
+        self.primary_actions.columnconfigure(0, weight=1)
+        self.primary_actions.columnconfigure(1, weight=3)
+        self.generate_button = ttk.Button(
+            self.primary_actions, text="Generate", command=self._generate_explicit
+        )
+        self.generate_button.grid(row=0, column=0, sticky="ew", padx=(0, 3))
+        self.complete_input_action = ttk.Button(
+            self.primary_actions,
+            text="Build complete SIESTA input (make-input)...",
+            command=self._export_complete_input,
+            state="disabled",
+        )
+        self.complete_input_action.grid(row=0, column=1, sticky="ew", padx=(3, 0))
+        ttk.Label(
+            self.primary_actions,
+            text="Creates a runnable starting FDF; same as `siesta-afm make-input`.",
+            foreground="#555555",
+            wraplength=520,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        self.export_buttons = [self.complete_input_action, *export_group_buttons]
+
+    def _bind_controls_mousewheel(self, _event: object | None = None) -> None:
+        self.controls_canvas.bind_all("<MouseWheel>", self._scroll_controls)
+
+    def _unbind_controls_mousewheel(self, _event: object | None = None) -> None:
+        self.controls_canvas.unbind_all("<MouseWheel>")
+
+    def _scroll_controls(self, event: Any) -> str:
+        steps = int(-1 * (event.delta / 120))
+        if steps:
+            self.controls_canvas.yview_scroll(steps, "units")
+        return "break"
 
     def _build_results(self) -> None:
         ttk = self.ttk
@@ -1411,11 +1456,17 @@ class DesktopApp:
         preview = ttk.LabelFrame(panel, text="Interactive 3D preview", padding=4)
         preview.grid(row=1, column=0, sticky="nsew", pady=(4, 6))
         preview.columnconfigure(0, weight=1)
-        preview.rowconfigure(0, weight=1)
+        preview.rowconfigure(1, weight=1)
+        ttk.Checkbutton(
+            preview,
+            text="Show atom indices",
+            variable=self.show_atom_indices_var,
+            command=self._show_atom_indices_changed,
+        ).grid(row=0, column=0, sticky="w", padx=2, pady=(0, 3))
         self.canvas_host = ttk.Frame(preview)
-        self.canvas_host.grid(row=0, column=0, sticky="nsew")
+        self.canvas_host.grid(row=1, column=0, sticky="nsew")
         self.toolbar_host = ttk.Frame(preview)
-        self.toolbar_host.grid(row=1, column=0, sticky="ew")
+        self.toolbar_host.grid(row=2, column=0, sticky="ew")
 
         notebook = ttk.Notebook(panel)
         notebook.grid(row=2, column=0, sticky="nsew")
@@ -1508,9 +1559,24 @@ class DesktopApp:
     def _build_candidates_tab(self, parent: Any) -> None:
         ttk = self.ttk
         parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(2, weight=1)
+        parent.rowconfigure(3, weight=1)
+        self.batch_workflow_help_label = ttk.Label(
+            parent,
+            text=(
+                "Compare several initial spin states: generate candidates here, "
+                "prepare SIESTA job folders, then load results after running them "
+                "externally to compare total energy. See README 'Comparing "
+                "magnetic states by total energy'."
+            ),
+            wraplength=720,
+            justify="left",
+            foreground="#555555",
+        )
+        self.batch_workflow_help_label.grid(
+            row=0, column=0, sticky="ew", pady=(0, 5)
+        )
         methods = ttk.LabelFrame(parent, text="Batch candidates", padding=5)
-        methods.grid(row=0, column=0, sticky="ew")
+        methods.grid(row=1, column=0, sticky="ew")
         for index, method in enumerate(_BATCH_METHODS):
             ttk.Checkbutton(
                 methods,
@@ -1519,7 +1585,7 @@ class DesktopApp:
             ).grid(row=index // 3, column=index % 3, sticky="w", padx=(0, 12))
 
         controls = ttk.Frame(parent)
-        controls.grid(row=1, column=0, sticky="ew", pady=(4, 3))
+        controls.grid(row=2, column=0, sticky="ew", pady=(4, 3))
         controls.columnconfigure(4, weight=1)
         ttk.Label(controls, text="n-configs").grid(row=0, column=0, sticky="w")
         self.batch_n_configs_spinbox = ttk.Spinbox(
@@ -1565,7 +1631,7 @@ class DesktopApp:
         ).grid(row=2, column=5, padx=(0, 4), pady=(3, 0))
 
         table_frame = ttk.Frame(parent)
-        table_frame.grid(row=2, column=0, sticky="nsew")
+        table_frame.grid(row=3, column=0, sticky="nsew")
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
         self.candidate_tree = ttk.Treeview(
@@ -1605,7 +1671,7 @@ class DesktopApp:
         candidate_y.grid(row=0, column=1, sticky="ns")
         candidate_x.grid(row=1, column=0, sticky="ew")
         self.candidate_messages = self.tk.Text(parent, height=3, wrap="word")
-        self.candidate_messages.grid(row=3, column=0, sticky="ew", pady=(3, 0))
+        self.candidate_messages.grid(row=4, column=0, sticky="ew", pady=(3, 0))
         self.candidate_messages.configure(state="disabled")
 
     def _build_prepare_tab(self, parent: Any) -> None:
@@ -2052,6 +2118,11 @@ class DesktopApp:
             return
         self._parameter_changed()
 
+    def _reset_show_indices_for_structure(self, structure: Structure) -> None:
+        self.show_atom_indices_var.set(
+            len(structure.symbols) <= _AUTO_SHOW_INDICES_MAX_ATOMS
+        )
+
     def _run_table_refresh(self) -> None:
         self._table_after_id = None
         self._refresh_magnetization_table()
@@ -2096,6 +2167,7 @@ class DesktopApp:
             return False
         self.structure_path = candidate
         self.current_structure = structure
+        self._reset_show_indices_for_structure(structure)
         self._coordination_use_note = None
         self.file_var.set(str(self.structure_path))
         self.viewing_spin_path = None
@@ -2491,7 +2563,7 @@ class DesktopApp:
             figure = create_spin_figure(
                 result.structure,
                 result.spins,
-                show_indices=True,
+                show_indices=self.show_atom_indices_var.get(),
                 color_mode=params.color_mode,
             )
             self._restore_camera(figure, camera)
@@ -2556,7 +2628,7 @@ class DesktopApp:
             figure = create_spin_figure(
                 structure,
                 loaded.spins,
-                show_indices=True,
+                show_indices=self.show_atom_indices_var.get(),
                 color_mode=_COLOR_MODES[self.color_mode_var.get()],
             )
             self._restore_camera(figure, camera)
@@ -2581,6 +2653,27 @@ class DesktopApp:
         self._replace_figure(figure)
         self._set_exports_enabled(True)
         self.status_var.set(f"Viewing spin file: {self.viewing_spin_path.name}")
+
+    def _show_atom_indices_changed(self) -> None:
+        if (
+            self.current_structure is None
+            or self.current_result is None
+            or self.current_result.structure is not self.current_structure
+            or not self.current_spins
+        ):
+            return
+        try:
+            camera = self._capture_camera()
+            figure = create_spin_figure(
+                self.current_structure,
+                self.current_spins,
+                show_indices=self.show_atom_indices_var.get(),
+                color_mode=_COLOR_MODES[self.color_mode_var.get()],
+            )
+            self._restore_camera(figure, camera)
+            self._replace_figure(figure)
+        except Exception as exc:
+            self.status_var.set(f"Preview not updated: {exc}")
 
     def _capture_camera(self) -> _CameraState | None:
         if self.figure is None or not self.figure.axes:
@@ -2751,6 +2844,7 @@ class DesktopApp:
         self.status_var.set(f"{success}: {destination}")
 
     def _close(self) -> None:
+        self._unbind_controls_mousewheel()
         if self._live_after_id is not None:
             self.root.after_cancel(self._live_after_id)
             self._live_after_id = None
