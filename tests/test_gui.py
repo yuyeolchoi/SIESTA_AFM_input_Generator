@@ -225,6 +225,77 @@ def test_moment_text_is_derived_from_table_rows() -> None:
     assert gui.moment_text_from_rows(rows, "by-coordination") is None
 
 
+def test_workflow_kwargs_gate_method_specific_inputs_without_tk() -> None:
+    rows = [
+        gui.MagnetizationRow(True, "Ni", "Oh", 6, "2.0", 2, "up"),
+        gui.MagnetizationRow(True, "Co", "Td", 4, "3.0", 2, "down"),
+    ]
+    inputs = {
+        "site_moment_file": " moments.csv ",
+        "axis": "x",
+        "layer_direction": "1, 2 3",
+        "layer_tolerance": "0.4",
+        "fractional_layers": True,
+        "auto_cutoff": False,
+        "cutoff": "3.5",
+        "allow_frustrated": True,
+        "q_vector": "not parsed",
+        "afm_type": "custom",
+        "anion_species": "O, S",
+        "anion_cutoff": "2.8",
+        "up_coordination": "not parsed",
+        "down_coordination": "not parsed",
+        "coordination_tolerance": "not parsed",
+        "max_colors": "not parsed",
+        "color_spins": "not parsed",
+        "balance_colors": True,
+        "group_file": " ignored.yaml ",
+        "seed_offset": "7",
+    }
+
+    layer = gui.workflow_kwargs_from_inputs(["layer"], rows, **inputs)
+    assert layer == {
+        "site_moment_file": "moments.csv",
+        "axis": "x",
+        "layer_direction": (1.0, 2.0, 3.0),
+        "layer_tolerance": 0.4,
+        "fractional_layers": True,
+        "cutoff": 3.5,
+        "neighbor_shell": 1,
+        "allow_frustrated": True,
+        "q_vector": None,
+        "afm_type": None,
+        "up_species": ("Ni",),
+        "down_species": ("Co",),
+        "anion_species": ("O", "S"),
+        "anion_cutoff": "2.8",
+        "up_coordination": (6,),
+        "down_coordination": (4,),
+        "coordination_tolerance": 0,
+        "max_colors": 4,
+        "color_spins": None,
+        "balance_colors": False,
+        "group_file": None,
+        "seed_offset": 7,
+    }
+
+    inputs.update(
+        up_coordination="5, 6",
+        down_coordination="3 4",
+        coordination_tolerance="2",
+    )
+    coordinated = gui.workflow_kwargs_from_inputs(
+        ["layer", "by-coordination"], rows, **inputs
+    )
+    assert coordinated["layer_direction"] == (1.0, 2.0, 3.0)
+    assert coordinated["up_coordination"] == (5, 6)
+    assert coordinated["down_coordination"] == (3, 4)
+    assert coordinated["coordination_tolerance"] == 2
+    assert coordinated["q_vector"] is None
+    assert coordinated["max_colors"] == 4
+    assert coordinated["group_file"] is None
+
+
 def test_coordination_use_toggle_is_independent_and_survives_refresh() -> None:
     structure = read_structure(
         ROOT / "tests" / "fixtures" / "inverse_spinel_coordination.cif",
@@ -855,6 +926,90 @@ def test_real_tk_buttons_complete_batch_workflow(
         assert app.collected_results_tree.item(result_items[0], "tags") == (
             "near_ground",
         )
+    finally:
+        root.destroy()
+
+
+def test_real_tk_generate_buttons_share_edited_coordination_label(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dependencies = gui._load_gui_dependencies()
+    try:
+        root = dependencies.tk.Tk()
+    except dependencies.tk.TclError:
+        pytest.skip("Tk display is unavailable")
+    try:
+        try:
+            root.attributes("-alpha", 0.0)
+        except dependencies.tk.TclError:
+            pass
+        app = gui.DesktopApp(root, dependencies)
+        app.live_update_var.set(False)
+        app.structure_path = ROOT / "examples" / "CuO_bulk.cif"
+        app.current_structure = read_structure(app.structure_path)
+        app.magnetization_rows = gui.magnetization_rows_from_structure(
+            app.current_structure, "layer"
+        )
+        app.method_var.set("by-coordination")
+        root.update()
+
+        row_index = next(
+            index
+            for index, row in enumerate(app.magnetization_rows)
+            if row.use and row.element == "Cu" and row.coordination == 4
+        )
+        item = str(row_index)
+        x, y, width, height = app.magnetization_tree.bbox(item, "#3")
+        for _ in range(2):
+            app.magnetization_tree.event_generate(
+                "<ButtonPress-1>", x=x + width // 2, y=y + height // 2
+            )
+            app.magnetization_tree.event_generate(
+                "<ButtonRelease-1>", x=x + width // 2, y=y + height // 2
+            )
+            root.update()
+        assert app._cell_editor is not None
+        app._cell_editor.delete(0, "end")
+        app._cell_editor.insert(0, "user-label")
+        app._cell_editor.event_generate("<Return>")
+        root.update()
+        assert app.magnetization_rows[row_index].label == "user-label"
+
+        errors: list[str] = []
+        monkeypatch.setattr(
+            app.deps.messagebox,
+            "showerror",
+            lambda _title, message: errors.append(str(message)),
+        )
+        app.generate_button.event_generate("<ButtonPress-1>", x=5, y=5)
+        root.update()
+        app.generate_button.event_generate("<ButtonRelease-1>", x=5, y=5)
+        root.update()
+        single_block = app.current_block
+        assert not errors
+        assert "user-label, CN=4" in single_block
+
+        for method, variable in app.batch_method_vars.items():
+            variable.set(method == "by-coordination")
+        candidates = tmp_path / "candidates"
+        app.batch_n_configs_var.set("1")
+        app.candidate_output_var.set(str(candidates))
+        app.results_notebook.select(3)
+        root.update()
+        button = app.generate_candidates_button
+        button.event_generate("<ButtonPress-1>", x=5, y=5)
+        root.update()
+        button.event_generate("<ButtonRelease-1>", x=5, y=5)
+        root.update()
+
+        candidate_block = (candidates / "afm_001.fdf").read_text(encoding="utf-8")
+        assert not errors
+        assert "user-label, CN=4" in candidate_block
+        assert single_block.count("user-label, CN=4") == candidate_block.count(
+            "user-label, CN=4"
+        )
+        assert "square-planar, CN=4" not in single_block
+        assert "square-planar, CN=4" not in candidate_block
     finally:
         root.destroy()
 

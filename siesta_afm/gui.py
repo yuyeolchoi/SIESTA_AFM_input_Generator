@@ -29,6 +29,7 @@ from .visualize import create_spin_figure, plot_spin_pattern
 from .workflows import (
     ENUMERATION_METHODS,
     EnumerationResult,
+    apply_coordination_labels,
     enumerate_candidates,
     generate_assignment,
 )
@@ -155,6 +156,17 @@ class ResultTableRow:
     tags: tuple[str, ...]
 
 
+def _split_words(text: str) -> tuple[str, ...]:
+    return tuple(value for value in text.replace(",", " ").split() if value)
+
+
+def _three_numbers(text: str, label: str) -> tuple[float, float, float]:
+    values = [float(value) for value in text.replace(",", " ").split()]
+    if len(values) != 3:
+        raise ValueError(f"{label} must contain exactly three numbers")
+    return values[0], values[1], values[2]
+
+
 def _element_counts(structure: Structure) -> dict[str, int]:
     counts: dict[str, int] = {}
     for symbol in structure.symbols:
@@ -264,6 +276,113 @@ def species_roles_from_rows(
         elif role == "down":
             down.append(element)
     return tuple(up), tuple(down)
+
+
+def coordination_labels_from_rows(
+    rows: Sequence[MagnetizationRow],
+) -> tuple[tuple[str, int, str], ...]:
+    """Return editable coordination labels for checked site rows."""
+
+    return tuple(
+        (row.element, row.coordination, row.label)
+        for row in rows
+        if row.use
+        and row.coordination is not None
+        and row.label not in {"", "-"}
+    )
+
+
+def workflow_kwargs_from_inputs(
+    methods: Sequence[str],
+    magnetization_rows: Sequence[MagnetizationRow],
+    *,
+    site_moment_file: str = "",
+    axis: str = "z",
+    layer_direction: str = "",
+    layer_tolerance: str | float = 0.25,
+    fractional_layers: bool = False,
+    auto_cutoff: bool = True,
+    cutoff: str | float = 3.2,
+    allow_frustrated: bool = False,
+    q_vector: str = "",
+    afm_type: str = "custom",
+    anion_species: str = "",
+    anion_cutoff: str = "auto",
+    up_coordination: str = "6",
+    down_coordination: str = "4",
+    coordination_tolerance: str | int = 0,
+    max_colors: str | int = 4,
+    color_spins: str = "",
+    balance_colors: bool = False,
+    group_file: str = "",
+    seed_offset: str | int = 0,
+) -> dict[str, object]:
+    """Collect workflow options from widget-independent input values."""
+
+    selected_methods = set(methods)
+    parsed_cutoff: str | float = "auto" if auto_cutoff else float(cutoff)
+    parsed_layer_direction = None
+    direction_text = layer_direction.strip()
+    if "layer" in selected_methods and direction_text:
+        parsed_layer_direction = _three_numbers(direction_text, "layer direction")
+
+    parsed_q_vector = None
+    selected_afm_type = None
+    if "propagation-vector" in selected_methods:
+        if afm_type == "custom":
+            parsed_q_vector = _three_numbers(q_vector, "q-vector")
+        else:
+            selected_afm_type = afm_type
+
+    up_species, down_species = species_roles_from_rows(magnetization_rows)
+    if "by-coordination" in selected_methods:
+        parsed_up_coordination = tuple(
+            int(value) for value in _split_words(up_coordination)
+        )
+        parsed_down_coordination = tuple(
+            int(value) for value in _split_words(down_coordination)
+        )
+        parsed_coordination_tolerance = int(coordination_tolerance)
+    else:
+        parsed_up_coordination = (6,)
+        parsed_down_coordination = (4,)
+        parsed_coordination_tolerance = 0
+
+    if "graph-coloring" in selected_methods:
+        parsed_max_colors = int(max_colors)
+        parsed_color_spins = color_spins.strip() or None
+        parsed_balance_colors = balance_colors
+    else:
+        parsed_max_colors = 4
+        parsed_color_spins = None
+        parsed_balance_colors = False
+
+    return {
+        "site_moment_file": site_moment_file.strip() or None,
+        "axis": axis,
+        "layer_direction": parsed_layer_direction,
+        "layer_tolerance": float(layer_tolerance),
+        "fractional_layers": fractional_layers,
+        "cutoff": parsed_cutoff,
+        "neighbor_shell": 1,
+        "allow_frustrated": allow_frustrated,
+        "q_vector": parsed_q_vector,
+        "afm_type": selected_afm_type,
+        "up_species": up_species,
+        "down_species": down_species,
+        "anion_species": _split_words(anion_species),
+        "anion_cutoff": anion_cutoff.strip() or "auto",
+        "up_coordination": parsed_up_coordination,
+        "down_coordination": parsed_down_coordination,
+        "coordination_tolerance": parsed_coordination_tolerance,
+        "max_colors": parsed_max_colors,
+        "color_spins": parsed_color_spins,
+        "balance_colors": parsed_balance_colors,
+        "group_file": (
+            group_file.strip() if "manual-groups" in selected_methods else None
+        ),
+        "seed_offset": int(seed_offset),
+    }
 
 
 def equivalent_cli_options(rows: Sequence[MagnetizationRow], method: str) -> str:
@@ -622,20 +741,9 @@ def run_generation(params: GenerationParams) -> GenerationResult:
         balance_colors=params.balance_colors,
         seed=params.seed,
     )
-    if params.method == "by-coordination" and params.coordination_labels:
-        coordinations = assignment.metadata.get("coordination_numbers")
-        if isinstance(coordinations, dict):
-            labels = {
-                (element.lower(), coordination): label
-                for element, coordination, label in params.coordination_labels
-                if label
-            }
-            geometry = dict(assignment.metadata.get("coordination_geometry", {}))
-            for index in indices:
-                key = (structure.symbols[index].lower(), int(coordinations[index]))
-                if key in labels:
-                    geometry[index] = labels[key]
-            assignment.metadata["coordination_geometry"] = geometry
+    apply_coordination_labels(
+        structure, indices, assignment, params.coordination_labels
+    )
     block = render_dm_init_spin(
         spins,
         method=assignment.method,
@@ -1527,15 +1635,6 @@ class DesktopApp:
             canvas.yview_scroll(steps, "units")
         return "break"
 
-    def _bind_controls_mousewheel(self, _event: object | None = None) -> None:
-        self._activate_canvas_mousewheel(self.controls_canvas)
-
-    def _unbind_controls_mousewheel(self, _event: object | None = None) -> None:
-        self._deactivate_canvas_mousewheel()
-
-    def _scroll_controls(self, event: Any) -> str:
-        return self._scroll_canvas(self.controls_canvas, event)
-
     def _build_results(self) -> None:
         ttk = self.ttk
         panel = ttk.Frame(self.main_pane, padding=(0, 10, 10, 10))
@@ -2220,10 +2319,6 @@ class DesktopApp:
         ):
             variable.trace_add("write", self._coordination_setting_changed)
 
-    @staticmethod
-    def _split_words(text: str) -> tuple[str, ...]:
-        return tuple(value for value in text.replace(",", " ").split() if value)
-
     def _method_changed(self, *_: object) -> None:
         if not self._traces_ready:
             return
@@ -2288,7 +2383,7 @@ class DesktopApp:
             self.current_structure,
             method,
             existing_rows=self.magnetization_rows,
-            anion_species=self._split_words(self.anion_species_var.get()) or None,
+            anion_species=_split_words(self.anion_species_var.get()) or None,
             anion_cutoff=self.anion_cutoff_var.get().strip() or "auto",
         )
         if self._coordination_fallback:
@@ -2388,82 +2483,36 @@ class DesktopApp:
             self.results_csv_var.set(path)
             self.jobs_dir_var.set("")
 
-    @staticmethod
-    def _three_numbers(text: str, label: str) -> tuple[float, float, float]:
-        values = [float(value) for value in text.replace(",", " ").split()]
-        if len(values) != 3:
-            raise ValueError(f"{label} must contain exactly three numbers")
-        return values[0], values[1], values[2]
-
-    def _batch_workflow_kwargs(self, methods: Sequence[str]) -> dict[str, object]:
-        cutoff: str | float = (
-            "auto" if self.auto_cutoff_var.get() else float(self.cutoff_var.get())
+    def _workflow_kwargs(
+        self,
+        methods: Sequence[str],
+        *,
+        seed_offset: str | int | None = None,
+    ) -> dict[str, object]:
+        return workflow_kwargs_from_inputs(
+            methods,
+            self.magnetization_rows,
+            site_moment_file=self.site_moment_file_var.get(),
+            axis=self.axis_var.get(),
+            layer_direction=self.layer_direction_var.get(),
+            layer_tolerance=self.tolerance_var.get(),
+            fractional_layers=self.fractional_layers_var.get(),
+            auto_cutoff=self.auto_cutoff_var.get(),
+            cutoff=self.cutoff_var.get(),
+            allow_frustrated=self.allow_frustrated_var.get(),
+            q_vector=self.q_vector_var.get(),
+            afm_type=self.afm_type_var.get(),
+            anion_species=self.anion_species_var.get(),
+            anion_cutoff=self.anion_cutoff_var.get(),
+            up_coordination=self.up_coordination_var.get(),
+            down_coordination=self.down_coordination_var.get(),
+            coordination_tolerance=self.coordination_tolerance_var.get(),
+            max_colors=self.max_colors_var.get(),
+            color_spins=self.color_spins_var.get(),
+            balance_colors=self.balance_colors_var.get(),
+            group_file=self.batch_group_file_var.get(),
+            seed_offset=(self.seed_var.get() if seed_offset is None else seed_offset),
         )
-        layer_direction = None
-        direction_text = self.layer_direction_var.get().strip()
-        if "layer" in methods and direction_text:
-            layer_direction = self._three_numbers(direction_text, "layer direction")
-
-        q_vector = None
-        afm_type = None
-        if "propagation-vector" in methods:
-            selected_afm_type = self.afm_type_var.get()
-            if selected_afm_type == "custom":
-                q_vector = self._three_numbers(self.q_vector_var.get(), "q-vector")
-            else:
-                afm_type = selected_afm_type
-
-        up_species, down_species = species_roles_from_rows(self.magnetization_rows)
-        if "by-coordination" in methods:
-            up_coordination = tuple(
-                int(value)
-                for value in self._split_words(self.up_coordination_var.get())
-            )
-            down_coordination = tuple(
-                int(value)
-                for value in self._split_words(self.down_coordination_var.get())
-            )
-            coordination_tolerance = int(self.coordination_tolerance_var.get())
-        else:
-            up_coordination = (6,)
-            down_coordination = (4,)
-            coordination_tolerance = 0
-        if "graph-coloring" in methods:
-            max_colors = int(self.max_colors_var.get())
-            color_spins = self.color_spins_var.get().strip() or None
-            balance_colors = self.balance_colors_var.get()
-        else:
-            max_colors = 4
-            color_spins = None
-            balance_colors = False
-        return {
-            "site_moment_file": self.site_moment_file_var.get().strip() or None,
-            "axis": self.axis_var.get(),
-            "layer_direction": layer_direction,
-            "layer_tolerance": float(self.tolerance_var.get()),
-            "fractional_layers": self.fractional_layers_var.get(),
-            "cutoff": cutoff,
-            "neighbor_shell": 1,
-            "allow_frustrated": self.allow_frustrated_var.get(),
-            "q_vector": q_vector,
-            "afm_type": afm_type,
-            "up_species": up_species,
-            "down_species": down_species,
-            "anion_species": self._split_words(self.anion_species_var.get()) or None,
-            "anion_cutoff": self.anion_cutoff_var.get().strip() or "auto",
-            "up_coordination": up_coordination,
-            "down_coordination": down_coordination,
-            "coordination_tolerance": coordination_tolerance,
-            "max_colors": max_colors,
-            "color_spins": color_spins,
-            "balance_colors": balance_colors,
-            "group_file": (
-                self.batch_group_file_var.get().strip()
-                if "manual-groups" in methods
-                else None
-            ),
-            "seed_offset": int(self.seed_var.get()),
-        }
 
     def _generate_candidates(self) -> None:
         try:
@@ -2490,7 +2539,10 @@ class DesktopApp:
                 output_dir,
                 keep_global_spin_inversion=self.batch_keep_inversion_var.get(),
                 site_comments=self.site_comments_var.get(),
-                **self._batch_workflow_kwargs(methods),
+                coordination_labels=coordination_labels_from_rows(
+                    self.magnetization_rows
+                ),
+                **self._workflow_kwargs(methods),
             )
         except Exception as exc:
             self.status_var.set(f"Candidate generation failed: {exc}")
@@ -2566,95 +2618,30 @@ class DesktopApp:
             raise ValueError("select at least one magnetic element in the table")
         method = self.method_var.get()
         moment = moment_text_from_rows(self.magnetization_rows, method)
-        up_species, down_species = species_roles_from_rows(self.magnetization_rows)
-        coordination_labels = tuple(
-            (row.element, row.coordination, row.label)
-            for row in self.magnetization_rows
-            if row.use
-            and row.coordination is not None
-            and row.label not in {"", "-"}
+        workflow_kwargs = self._workflow_kwargs(
+            [method],
+            seed_offset=(
+                self.seed_var.get()
+                if method in {"random", "graph-coloring"}
+                else 0
+            ),
         )
-        layer_direction: tuple[float, float, float] | None = None
-        direction_text = self.layer_direction_var.get().strip()
-        if method == "layer" and direction_text:
-            direction_values = [
-                float(value) for value in direction_text.replace(",", " ").split()
-            ]
-            if len(direction_values) != 3:
-                raise ValueError("layer direction must contain exactly three numbers")
-            layer_direction = (
-                direction_values[0],
-                direction_values[1],
-                direction_values[2],
-            )
-        q_vector: tuple[float, float, float] | None = None
-        afm_type = self.afm_type_var.get()
-        if method == "propagation-vector" and afm_type == "custom":
-            values = [
-                float(value)
-                for value in self.q_vector_var.get().replace(",", " ").split()
-            ]
-            if len(values) != 3:
-                raise ValueError("q-vector must contain exactly three numbers")
-            q_vector = (values[0], values[1], values[2])
-        selected_afm_type = (
-            afm_type if method == "propagation-vector" and afm_type != "custom" else None
-        )
-        if method == "by-coordination":
-            up_coordination = tuple(
-                int(value)
-                for value in self._split_words(self.up_coordination_var.get())
-            )
-            down_coordination = tuple(
-                int(value)
-                for value in self._split_words(self.down_coordination_var.get())
-            )
-            coordination_tolerance = int(self.coordination_tolerance_var.get())
-        else:
-            up_coordination = (6,)
-            down_coordination = (4,)
-            coordination_tolerance = 0
-        if method == "graph-coloring":
-            max_colors = int(self.max_colors_var.get())
-            color_spins = self.color_spins_var.get().strip() or None
-            balance_colors = self.balance_colors_var.get()
-        else:
-            max_colors = 4
-            color_spins = None
-            balance_colors = False
-        seed = int(self.seed_var.get()) if method in {"random", "graph-coloring"} else 0
-        cutoff: str | float = (
-            "auto" if self.auto_cutoff_var.get() else float(self.cutoff_var.get())
-        )
+        workflow_kwargs.pop("neighbor_shell")
+        workflow_kwargs.pop("group_file")
+        seed = workflow_kwargs.pop("seed_offset")
         return GenerationParams(
             structure_path=self.structure_path,
             magnetic_species=species,
             method=method,
             moment=moment,
-            site_moment_file=self.site_moment_file_var.get().strip() or None,
             site_comments=self.site_comments_var.get(),
-            axis=self.axis_var.get(),
-            layer_direction=layer_direction,
-            fractional_layers=self.fractional_layers_var.get(),
-            cutoff=cutoff,
-            layer_tolerance=float(self.tolerance_var.get()),
             slab=self.slab_var.get(),
-            q_vector=q_vector,
-            afm_type=selected_afm_type,
-            allow_frustrated=self.allow_frustrated_var.get(),
-            up_species=up_species,
-            down_species=down_species,
-            anion_species=self._split_words(self.anion_species_var.get()),
-            anion_cutoff=self.anion_cutoff_var.get().strip() or "auto",
-            up_coordination=up_coordination,
-            down_coordination=down_coordination,
-            coordination_tolerance=coordination_tolerance,
-            coordination_labels=coordination_labels,
-            max_colors=max_colors,
-            color_spins=color_spins,
-            balance_colors=balance_colors,
+            coordination_labels=coordination_labels_from_rows(
+                self.magnetization_rows
+            ),
             seed=seed,
             color_mode=_COLOR_MODES[self.color_mode_var.get()],
+            **workflow_kwargs,
         )
 
     def _parameter_changed(self, *_: object) -> None:
@@ -2993,7 +2980,7 @@ class DesktopApp:
         self.status_var.set(f"{success}: {destination}")
 
     def _close(self) -> None:
-        self._unbind_controls_mousewheel()
+        self._deactivate_canvas_mousewheel()
         if self._live_after_id is not None:
             self.root.after_cancel(self._live_after_id)
             self._live_after_id = None

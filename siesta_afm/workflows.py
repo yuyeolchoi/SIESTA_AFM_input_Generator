@@ -335,6 +335,32 @@ def _canonical_pattern(
     return min(pattern, inverse)
 
 
+def apply_coordination_labels(
+    structure: Structure,
+    indices: Sequence[int],
+    assignment: SpinAssignment,
+    coordination_labels: Sequence[tuple[str, int, str]],
+) -> None:
+    """Apply user-edited coordination labels to assignment metadata in place."""
+
+    if assignment.method != "by-coordination" or not coordination_labels:
+        return
+    coordinations = assignment.metadata.get("coordination_numbers")
+    if not isinstance(coordinations, dict):
+        return
+    labels = {
+        (element.lower(), coordination): label
+        for element, coordination, label in coordination_labels
+        if label
+    }
+    geometry = dict(assignment.metadata.get("coordination_geometry", {}))
+    for index in indices:
+        key = (structure.symbols[index].lower(), int(coordinations[index]))
+        if key in labels:
+            geometry[index] = labels[key]
+    assignment.metadata["coordination_geometry"] = geometry
+
+
 def enumerate_candidates(
     structure: Structure,
     magnetic_species: Sequence[str],
@@ -345,6 +371,7 @@ def enumerate_candidates(
     *,
     keep_global_spin_inversion: bool = False,
     site_comments: bool = True,
+    coordination_labels: Sequence[tuple[str, int, str]] = (),
     seed_offset: int = 0,
     **workflow_kwargs: Any,
 ) -> EnumerationResult:
@@ -390,6 +417,9 @@ def enumerate_candidates(
             if message not in failures:
                 failures.append(message)
             continue
+        apply_coordination_labels(
+            structure, indices, assignment, coordination_labels
+        )
         key = _canonical_pattern(assignment.signs, keep_global_spin_inversion)
         if key in seen:
             continue
