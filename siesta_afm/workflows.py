@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Sequence
 
 from .magnetic_sites import (
+    built_in_element_moments,
     parse_atom_indices,
     resolve_moments,
     resolve_moments_with_sources,
@@ -32,7 +33,7 @@ def generate_assignment(
     structure: Structure,
     magnetic_species: Sequence[str],
     method: str,
-    moment: Sequence[str] | str,
+    moment: Sequence[str] | str | None,
     *,
     exclude_atoms: str | Sequence[str] | None = None,
     adsorbate_indices: str | Sequence[str] | None = None,
@@ -70,7 +71,14 @@ def generate_assignment(
         exclude_atoms=exclude_atoms,
         adsorbate_indices=adsorbate_indices,
     )
+    default_moments: dict[str, float] | None = None
+    if moment is None:
+        default_moments = built_in_element_moments(structure, indices)
+        moment = [
+            f"{element}={value:.1f}" for element, value in default_moments.items()
+        ]
     resolved_magnitudes: dict[int, float] | None = None
+    resolved_moment_sources: dict[int, str] | None = None
     if method == "alternating-index":
         assignment = alternating_index(indices)
     elif method == "random":
@@ -119,12 +127,22 @@ def generate_assignment(
             normal_tolerance=layer_tolerance,
         )
     elif method == "graph-coloring":
-        resolved_magnitudes = resolve_moments(
-            structure,
-            indices,
-            moment,
-            site_moment_file=site_moment_file,
-        )
+        if default_moments is not None:
+            resolved_magnitudes, resolved_moment_sources = (
+                resolve_moments_with_sources(
+                    structure,
+                    indices,
+                    moment,
+                    site_moment_file=site_moment_file,
+                )
+            )
+        else:
+            resolved_magnitudes = resolve_moments(
+                structure,
+                indices,
+                moment,
+                site_moment_file=site_moment_file,
+            )
         assignment = graph_coloring_ordering(
             structure,
             indices,
@@ -194,7 +212,7 @@ def generate_assignment(
     )
     if resolved_magnitudes is None:
         if method == "by-coordination" and isinstance(coordinations, dict):
-            resolved_magnitudes, moment_sources = resolve_moments_with_sources(
+            resolved_magnitudes, resolved_moment_sources = resolve_moments_with_sources(
                 structure,
                 indices,
                 moment,
@@ -210,7 +228,7 @@ def generate_assignment(
                 cn_by_element.setdefault(normalized, set()).add(coordinations[index])
             for element, coordination_values in cn_by_element.items():
                 if len(coordination_values) < 2 or not any(
-                    moment_sources[index] in {"element", "global"}
+                    resolved_moment_sources[index] in {"element", "global"}
                     for index in indices
                     if structure.symbols[index].lower() == element
                 ):
@@ -230,6 +248,16 @@ def generate_assignment(
                     "moment was taken from a single value; use "
                     f"{specifications} to set {sublattices} independently"
                 )
+        elif default_moments is not None:
+            resolved_magnitudes, resolved_moment_sources = resolve_moments_with_sources(
+                structure,
+                indices,
+                moment,
+                site_moment_file=site_moment_file,
+                coordinations=(
+                    coordinations if isinstance(coordinations, dict) else None
+                ),
+            )
         else:
             resolved_magnitudes = resolve_moments(
                 structure,
@@ -240,4 +268,25 @@ def generate_assignment(
                     coordinations if isinstance(coordinations, dict) else None
                 ),
             )
+    if default_moments is not None:
+        applied_defaults = {
+            element: value
+            for element, value in default_moments.items()
+            if any(
+                structure.symbols[index].lower() == element.lower()
+                and resolved_moment_sources is not None
+                and resolved_moment_sources[index] != "site"
+                for index in indices
+            )
+        }
+        applied = ", ".join(
+            f"{element}={value:.1f}" for element, value in applied_defaults.items()
+        ) or "none (all selected sites use site-moment overrides)"
+        assignment.warnings.insert(
+            0,
+            "using built-in default initial moments (generic high-spin guesses): "
+            f"{applied}. These ignore oxidation and spin state -- e.g. low-spin Co3+ "
+            "is ~0 -- and are only a starting guess; pass --moment to set them "
+            "explicitly.",
+        )
     return indices, assignment, assignment.moments(resolved_magnitudes)

@@ -332,3 +332,109 @@ def test_by_coordination_cli_warns_for_ambiguous_element_moment(
     stderr = capsys.readouterr().err
     assert "element Co occupies both CN=4 and CN=6 sites" in stderr
     assert "Co@4=... and Co@6=..." in stderr
+
+
+def test_generate_without_moment_uses_defaults_and_site_comments(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output = tmp_path / "defaults.fdf"
+    code = main(
+        [
+            "generate",
+            str(ROOT / "tests" / "fixtures" / "inverse_spinel_coordination.cif"),
+            "--slab",
+            "--magnetic-species",
+            "Ni",
+            "Co",
+            "--method",
+            "by-coordination",
+            "--anion-species",
+            "O",
+            "--output",
+            str(output),
+        ]
+    )
+    assert code == 0
+    assert {abs(value) for _, value in parse_dm_init_spin(output)} == {2.0, 3.0}
+    text = output.read_text(encoding="utf-8")
+    assert "# Ni  (Oh, CN=6)" in text
+    assert "# Co  (Td, CN=4)" in text
+    stderr = capsys.readouterr().err
+    assert "using built-in default initial moments" in stderr
+    assert "Ni=2.0, Co=3.0" in stderr
+    assert "pass --moment to set them explicitly" in stderr
+
+
+def test_generate_site_comments_can_be_disabled(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output = tmp_path / "legacy_rows.fdf"
+    assert (
+        main(
+            [
+                "generate",
+                str(ROOT / "examples" / "input.fdf"),
+                "--magnetic-species",
+                "Cu",
+                "--method",
+                "layer",
+                "--moment",
+                "0.5",
+                "--no-site-comments",
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    block = output.read_text(encoding="utf-8").split("%block DM.InitSpin", 1)[1]
+    block = block.split("%endblock DM.InitSpin", 1)[0]
+    assert "#" not in block
+    assert "built-in default" not in capsys.readouterr().err
+
+
+def test_omitted_and_partial_moment_errors_are_actionable(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ru_structure = tmp_path / "ru.xyz"
+    ru_structure.write_text("1\nRu\nRu 0 0 0\n", encoding="utf-8")
+    assert (
+        main(
+            [
+                "generate",
+                str(ru_structure),
+                "--magnetic-species",
+                "Ru",
+                "--method",
+                "alternating-index",
+            ]
+        )
+        == 2
+    )
+    assert "no built-in default for element Ru; pass --moment Ru=..." in (
+        capsys.readouterr().err
+    )
+
+    assert (
+        main(
+            [
+                "generate",
+                str(ROOT / "tests" / "fixtures" / "inverse_spinel_coordination.cif"),
+                "--slab",
+                "--magnetic-species",
+                "Ni",
+                "Co",
+                "--method",
+                "by-coordination",
+                "--anion-species",
+                "O",
+                "--moment",
+                "Ni=2.0",
+            ]
+        )
+        == 2
+    )
+    partial_error = capsys.readouterr().err
+    assert "no initial moment specified for magnetic atom 3 (Co@6)" in partial_error
+    assert "the built-in default is Co=3.0" in partial_error
+    assert "pass --moment Co@6=... or omit --moment" in partial_error

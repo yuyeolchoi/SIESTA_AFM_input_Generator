@@ -18,6 +18,7 @@ def render_dm_init_spin(
     metadata: Mapping[str, object] | None = None,
     structure: Structure | None = None,
     write_zero_spins: bool = False,
+    site_comments: bool = True,
 ) -> str:
     """Render zero-based spin keys as one-based SIESTA atom indices."""
 
@@ -70,8 +71,28 @@ def render_dm_init_spin(
             "%block DM.InitSpin",
         ]
     )
+    coordination_numbers = metadata.get("coordination_numbers")
+    sublattices = metadata.get("sublattice_classification")
     for index in sorted(rows):
-        header.append(f"{index + 1:6d} {rows[index]:12.6f}")
+        line = f"{index + 1:6d} {rows[index]:12.6f}"
+        if structure is not None and site_comments and 0 <= index < len(structure):
+            symbol = structure.symbols[index]
+            line += f"  # {symbol:<2}"
+            if (
+                isinstance(coordination_numbers, Mapping)
+                and isinstance(sublattices, Mapping)
+                and index in coordination_numbers
+                and index in sublattices
+            ):
+                coordination = int(coordination_numbers[index])
+                site_name = {4: "Td", 6: "Oh"}.get(coordination)
+                detail = (
+                    f"{site_name}, CN={coordination}"
+                    if site_name
+                    else f"CN={coordination}"
+                )
+                line += f"  ({detail})"
+        header.append(line)
     header.append("%endblock DM.InitSpin")
     return "\n".join(header) + "\n"
 

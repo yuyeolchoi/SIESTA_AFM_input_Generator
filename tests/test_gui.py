@@ -53,6 +53,32 @@ def test_generation_controller_runs_without_tk_widgets() -> None:
     assert all(row["CN"] == "-" and row["sublattice"] == "-" for row in rows)
 
 
+def test_gui_blank_moment_uses_defaults_and_site_comment_toggle() -> None:
+    params = gui.GenerationParams(
+        structure_path=ROOT / "examples" / "CuO_bulk.cif",
+        magnetic_species=("Cu",),
+        method="layer",
+    )
+    result = gui.run_generation(params)
+    assert {abs(value) for value in result.spins.values()} == {1.0}
+    assert "using built-in default initial moments" in "\n".join(result.warnings)
+    assert "Cu=1.0" in "\n".join(result.warnings)
+    assert "# Cu" in result.block
+
+    without_comments = gui.run_generation(
+        gui.GenerationParams(
+            structure_path=params.structure_path,
+            magnetic_species=params.magnetic_species,
+            method=params.method,
+            moment="0.5",
+            site_comments=False,
+        )
+    )
+    spin_rows = without_comments.block.split("%block DM.InitSpin", 1)[1]
+    spin_rows = spin_rows.split("%endblock DM.InitSpin", 1)[0]
+    assert "#" not in spin_rows
+
+
 def test_gui_exposes_generation_methods_and_propagation_preset() -> None:
     assert {"random", "by-species", "by-coordination", "graph-coloring"}.issubset(
         gui._METHODS
@@ -170,14 +196,14 @@ def test_detect_coordination_combinations_for_spinel_examples() -> None:
     }
 
 
-def test_coordination_template_uses_existing_global_magnitude() -> None:
+def test_coordination_template_uses_builtins_or_existing_global_magnitude() -> None:
     counts = {("Ni", 6): 2, ("Co", 4): 2, ("Co", 6): 2}
     assert gui.coordination_moment_template(counts, 0.5) == (
         "Ni@6=0.5 Co@4=0.5 Co@6=0.5"
     )
     assert "Ni@6 (2 atoms)" in gui.format_detected_coordination(counts)
     assert gui.suggested_coordination_moment_text("", counts) == (
-        "Ni@6=1 Co@4=1 Co@6=1"
+        "Ni@6=2 Co@4=3 Co@6=3"
     )
     assert gui.suggested_coordination_moment_text("0.5", counts) == (
         "Ni@6=0.5 Co@4=0.5 Co@6=0.5"
@@ -277,6 +303,7 @@ def test_spin_file_viewer_converts_indices_and_builds_preview_block(
     assert loaded.spins == {0: 0.7, 2: -0.5}
     assert loaded.validation.valid
     assert parse_dm_init_spin(loaded.block) == [(1, 0.7), (3, -0.5)]
+    assert "# Cu" in loaded.block
     rows = gui.site_assignment_rows(loaded)
     assert [row["atom"] for row in rows] == [1, 3]
     assert all(row["CN"] == "-" and row["sublattice"] == "-" for row in rows)

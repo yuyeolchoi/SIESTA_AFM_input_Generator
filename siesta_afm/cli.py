@@ -86,7 +86,7 @@ def _add_site_controls(
 ) -> None:
     parser.add_argument("--magnetic-species", nargs="+", required=True)
     if require_moment:
-        group = parser.add_mutually_exclusive_group(required=True)
+        group = parser.add_mutually_exclusive_group()
         group.add_argument(
             "--moment",
             nargs="+",
@@ -104,6 +104,16 @@ def _add_site_controls(
 def _add_neighbor_controls(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--cutoff", "--neighbor-cutoff", default="auto")
     parser.add_argument("--neighbor-shell", type=int, default=1)
+
+
+def _add_site_comment_control(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--no-site-comments",
+        dest="site_comments",
+        action="store_false",
+        default=True,
+        help="omit element/CN comments from DM.InitSpin rows",
+    )
 
 
 def _add_ordering_controls(parser: argparse.ArgumentParser) -> None:
@@ -212,6 +222,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     generate.add_argument("--output")
     generate.add_argument("--write-zero-spins", action="store_true")
+    _add_site_comment_control(generate)
     generate.add_argument("--patch-input", action="store_true")
     generate.add_argument("--in-place", action="store_true")
     generate.add_argument("--backup", action="store_true")
@@ -287,6 +298,7 @@ def build_parser() -> argparse.ArgumentParser:
     enumerate_parser.add_argument("--n-configs", type=int, default=8)
     enumerate_parser.add_argument("--output-dir", required=True)
     enumerate_parser.add_argument("--keep-global-spin-inversion", action="store_true")
+    _add_site_comment_control(enumerate_parser)
     enumerate_parser.set_defaults(func=_cmd_enumerate)
 
     array = subparsers.add_parser(
@@ -348,12 +360,12 @@ def _workflow_kwargs(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def _moment_values(args: argparse.Namespace) -> list[str]:
-    return (
-        list(args.moment)
-        if args.moment is not None
-        else load_moment_config(args.moment_config)
-    )
+def _moment_values(args: argparse.Namespace) -> list[str] | None:
+    if args.moment is not None:
+        return list(args.moment)
+    if args.moment_config is not None:
+        return load_moment_config(args.moment_config)
+    return None
 
 
 def _cmd_generate(args: argparse.Namespace) -> int:
@@ -387,6 +399,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         metadata=assignment.metadata,
         structure=structure,
         write_zero_spins=args.write_zero_spins,
+        site_comments=args.site_comments,
     )
     if not args.patch_input:
         if args.in_place or args.backup:
@@ -586,6 +599,8 @@ def _cmd_enumerate(args: argparse.Namespace) -> int:
             method=assignment.method,
             magnetic_species=args.magnetic_species,
             metadata=assignment.metadata,
+            structure=structure,
+            site_comments=args.site_comments,
         )
         (output_dir / file_name).write_text(text, encoding="utf-8")
         manifest.append(

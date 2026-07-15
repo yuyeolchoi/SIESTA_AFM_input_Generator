@@ -9,6 +9,46 @@ from typing import Iterable, Sequence
 from .structure import Structure
 
 
+DEFAULT_ELEMENT_MOMENTS: dict[str, float] = {
+    "Ti": 2.0,
+    "V": 3.0,
+    "Cr": 3.0,
+    "Mn": 5.0,
+    "Fe": 4.0,
+    "Co": 3.0,
+    "Ni": 2.0,
+    "Cu": 1.0,
+    "Gd": 7.0,
+}
+
+
+def built_in_element_moments(
+    structure: Structure, magnetic_indices: Sequence[int]
+) -> dict[str, float]:
+    """Return generic high-spin guesses in first-appearance element order."""
+
+    defaults_by_lower = {
+        element.lower(): (element, value)
+        for element, value in DEFAULT_ELEMENT_MOMENTS.items()
+    }
+    result: dict[str, float] = {}
+    seen: set[str] = set()
+    for index in magnetic_indices:
+        symbol = structure.symbols[index]
+        normalized = symbol.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        if normalized not in defaults_by_lower:
+            raise ValueError(
+                f"no built-in default for element {symbol}; "
+                f"pass --moment {symbol}=..."
+            )
+        canonical, value = defaults_by_lower[normalized]
+        result[canonical] = value
+    return result
+
+
 def parse_atom_indices(values: str | Iterable[str] | None) -> set[int]:
     """Parse one-based indices and inclusive ranges such as ``2,5,8-11``."""
 
@@ -220,11 +260,33 @@ def resolve_moments_with_sources(
                 result[index] = global_moment
                 sources[index] = "global"
             else:
+                default = next(
+                    (
+                        value
+                        for element, value in DEFAULT_ELEMENT_MOMENTS.items()
+                        if element.lower() == symbol
+                    ),
+                    None,
+                )
+                hint = ""
+                if default is not None:
+                    site_specification = (
+                        f"{structure.symbols[index]}@{coordination}=..."
+                        if coordination is not None
+                        else f"{structure.symbols[index]}=..."
+                    )
+                    hint = (
+                        f"; the built-in default is "
+                        f"{structure.symbols[index]}={default:.1f} -- pass --moment "
+                        f"{site_specification} or omit --moment to use defaults for "
+                        "all species"
+                    )
                 raise ValueError(
                     f"no initial moment specified for magnetic atom {index + 1} "
                     f"({structure.symbols[index]}"
                     + (f"@{coordination}" if coordination is not None else "")
                     + ")"
+                    + hint
                 )
     return result, sources
 

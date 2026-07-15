@@ -8,7 +8,11 @@ from typing import Any, Mapping, Sequence
 
 from .fdf_writer import patch_fdf_text, render_dm_init_spin
 from .io import parse_dm_init_spin, read_structure
-from .magnetic_sites import parse_moment_arguments, select_magnetic_sites
+from .magnetic_sites import (
+    DEFAULT_ELEMENT_MOMENTS,
+    parse_moment_arguments,
+    select_magnetic_sites,
+)
 from .ordering import SpinAssignment, coordination_ordering
 from .structure import Structure
 from .validation import (
@@ -44,8 +48,9 @@ class GenerationParams:
     structure_path: str | Path
     magnetic_species: tuple[str, ...]
     method: str = "layer"
-    moment: str = "0.5"
+    moment: str | None = None
     site_moment_file: str | Path | None = None
+    site_comments: bool = True
     axis: str = "z"
     layer_direction: tuple[float, float, float] | None = None
     fractional_layers: bool = False
@@ -159,14 +164,26 @@ def format_detected_coordination(
 
 
 def coordination_moment_template(
-    counts: dict[tuple[str, int], int], default_moment: float = 1.0
+    counts: dict[tuple[str, int], int], default_moment: float | None = None
 ) -> str:
     """Build an editable ``Element@CN=value`` moment template."""
 
-    return " ".join(
-        f"{element}@{coordination}={abs(default_moment):g}"
-        for element, coordination in counts
-    )
+    defaults_by_lower = {
+        element.lower(): value for element, value in DEFAULT_ELEMENT_MOMENTS.items()
+    }
+    values: list[str] = []
+    for element, coordination in counts:
+        if default_moment is None:
+            if element.lower() not in defaults_by_lower:
+                raise ValueError(
+                    f"no built-in default for element {element}; "
+                    f"pass --moment {element}=..."
+                )
+            value = defaults_by_lower[element.lower()]
+        else:
+            value = abs(default_moment)
+        values.append(f"{element}@{coordination}={value:g}")
+    return " ".join(values)
 
 
 def suggested_coordination_moment_text(
@@ -176,7 +193,10 @@ def suggested_coordination_moment_text(
 
     text = current_text.strip()
     if not text:
-        return coordination_moment_template(counts)
+        try:
+            return coordination_moment_template(counts)
+        except ValueError:
+            return None
     try:
         global_moment, by_element, by_coordination = parse_moment_arguments(text)
     except ValueError:
@@ -296,6 +316,8 @@ def run_generation(params: GenerationParams) -> GenerationResult:
         method=assignment.method,
         magnetic_species=params.magnetic_species,
         metadata=assignment.metadata,
+        structure=structure,
+        site_comments=params.site_comments,
     )
     report = analyze_structure(
         structure,
@@ -325,6 +347,7 @@ def load_spin_file(
     cutoff: str | float = "auto",
     axis: str = "z",
     layer_tolerance: float = 0.25,
+    site_comments: bool = True,
 ) -> SpinFileResult:
     """Load and validate an existing spin file against a structure."""
 
@@ -351,6 +374,8 @@ def load_spin_file(
         spins,
         method="loaded-spin-file",
         magnetic_species=species,
+        structure=structure,
+        site_comments=site_comments,
     )
     return SpinFileResult(
         structure=structure,
@@ -473,8 +498,9 @@ class DesktopApp:
         self.file_var = tk.StringVar(value="No structure selected")
         self.species_var = tk.StringVar(value="Cu")
         self.method_var = tk.StringVar(value="layer")
-        self.moment_var = tk.StringVar(value="0.5")
+        self.moment_var = tk.StringVar(value="")
         self.site_moment_file_var = tk.StringVar(value="")
+        self.site_comments_var = tk.BooleanVar(value=True)
         self.detected_coordination_var = tk.StringVar(value="detected: -")
         self.axis_var = tk.StringVar(value="z")
         self.layer_direction_var = tk.StringVar(value="")
@@ -536,7 +562,10 @@ class DesktopApp:
         row = 2
         row = self._entry_row(panel, row, "Magnetic species", self.species_var)
         row = self._combo_row(panel, row, "Method", self.method_var, _METHODS)
-        ttk.Label(panel, text="Moment (value / Element@CN=value)").grid(
+        ttk.Label(
+            panel,
+            text="Moment (blank = built-in defaults; value / Element@CN=value)",
+        ).grid(
             row=row, column=0, sticky="w"
         )
         moment_controls = ttk.Frame(panel)
@@ -556,6 +585,12 @@ class DesktopApp:
             textvariable=self.detected_coordination_var,
             wraplength=370,
         ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 3))
+        row += 1
+        ttk.Checkbutton(
+            panel,
+            text="Include element/CN comments in DM.InitSpin",
+            variable=self.site_comments_var,
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=3)
         row += 1
         ttk.Label(panel, text="Site moment file").grid(row=row, column=0, sticky="w")
         site_file_controls = ttk.Frame(panel)
@@ -789,6 +824,7 @@ class DesktopApp:
             self.method_var,
             self.moment_var,
             self.site_moment_file_var,
+            self.site_comments_var,
             self.axis_var,
             self.layer_direction_var,
             self.fractional_layers_var,
@@ -963,8 +999,9 @@ class DesktopApp:
             structure_path=self.structure_path,
             magnetic_species=species,
             method=method,
-            moment=self.moment_var.get().strip(),
+            moment=self.moment_var.get().strip() or None,
             site_moment_file=self.site_moment_file_var.get().strip() or None,
+            site_comments=self.site_comments_var.get(),
             axis=self.axis_var.get(),
             layer_direction=layer_direction,
             fractional_layers=self.fractional_layers_var.get(),
@@ -1111,6 +1148,7 @@ class DesktopApp:
                 cutoff=cutoff,
                 axis=self.axis_var.get(),
                 layer_tolerance=float(self.tolerance_var.get()),
+                site_comments=self.site_comments_var.get(),
             )
             camera = None if self._reset_camera else self._capture_camera()
             figure = create_spin_figure(

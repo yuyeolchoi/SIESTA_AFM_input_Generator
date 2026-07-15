@@ -116,6 +116,25 @@ siesta-afm generate inverse_spinel.cif \
 
 `--moment 0.5`는 모든 선택 원소에 같은 크기를 쓰고, `--moment Cu=0.5 Ni=1.0`은 원소별 값을 씁니다. `Element@CN=value`는 같은 원소의 서로 다른 배위 환경을 구분합니다. 적용 우선순위는 site CSV > `Element@CN` > `Element` > 전역 값입니다. `--site-moment-file moments.csv`의 CSV에는 최소 `atom_index,moment` 열이 필요하고, 선택적으로 `element,oxidation_state` 열을 둘 수 있습니다.
 
+`--moment`와 `--moment-config`를 모두 생략하면 다음의 일반적인 고스핀 추정값을
+초기값으로 사용하며, 실제 적용된 기본값은 반드시 경고로 나열됩니다.
+
+| 원소 | μB | 원소 | μB | 원소 | μB |
+| --- | ---: | --- | ---: | --- | ---: |
+| Ti | 2.0 | V | 3.0 | Cr | 3.0 |
+| Mn | 5.0 | Fe | 4.0 | Co | 3.0 |
+| Ni | 2.0 | Cu | 1.0 | Gd | 7.0 |
+
+이 값은 산화수와 스핀 상태를 무시한 시작 추정값일 뿐입니다. 예를 들어 저스핀
+Co³⁺는 약 0 μB일 수 있습니다. 배위수별 기본값은 자동으로 만들지 않습니다. 표에 없는
+원소는 명시적인 moment가 필요하며, 부분적인 `--moment` 지정도 기본값과 조용히 섞지
+않고 기존처럼 오류로 처리합니다.
+
+생성된 `DM.InitSpin` 행에는 기본적으로 원소 인라인 주석이 붙습니다.
+`by-coordination`에서는 CN=4/6을 배위수 기준으로 Td/Oh라고 함께 표시합니다. 구형
+후처리 스크립트와의 호환성이 필요하면 `--no-site-comments`를 사용하십시오. 이 옵션은
+스핀 값에는 영향을 주지 않습니다.
+
 `by-species`의 up/down 합집합은 `--magnetic-species`와 정확히 같아야 합니다. 이 방법은 Ni/Co처럼 원소가 다른 sublattice에는 적합하지만, 같은 원소가 Td와 Oh 자리를 모두 차지하는 inverse spinel은 구분하지 못하므로 `by-coordination`을 사용해야 합니다. `by-coordination`은 O, S, Se, Te, N, F, Cl 중 구조에 하나만 존재하면 anion을 자동 감지하며, 여러 후보가 있으면 `--anion-species`를 요구합니다. 같은 basis anion의 서로 다른 주기 이미지도 각각 별도 이웃으로 세며, 기본 분류는 up CN=6, down CN=4입니다. `--anion-cutoff`, `--coordination-tolerance`로 판정을 조정할 수 있습니다.
 
 위 역스피넬 명령은 기본 배위 부격자 분류를 이용해 Ni(Oh)=+2 μB,
@@ -230,10 +249,15 @@ graph 분석과 DM.InitSpin 미리보기를 제공합니다. 파라미터 변경
 위에서 열어 볼 수 있습니다.
 
 `by-coordination`에서는 `Suggest` 버튼이 구조에 실제로 존재하는 `Element@CN` 조합을
-감지하고, 비어 있거나 단일 전역값인 moment 필드를 수정 가능한 자리별 템플릿으로
-바꿉니다. 감지된 조합과 원자 수는 필드 아래에 계속 표시됩니다. `Site moment file`은
+감지하고, 빈 moment에는 원소별 기본값을 채운 수정 가능한 자리별 템플릿을 만들며,
+단일 전역값이 입력되어 있으면 그 값을 재사용합니다. 감지된 조합과 원자 수는 필드
+아래에 계속 표시됩니다. `Site moment file`은
 CLI의 `--site-moment-file`과 같은 CSV를 받으며 site CSV > `Element@CN` > `Element` >
 전역값 우선순위를 그대로 사용합니다.
+
+moment 필드의 초기값은 비어 있으며(`blank = built-in defaults`), `Include element/CN
+comments in DM.InitSpin` 체크박스는 CLI의 `--no-site-comments`와 같은 기능을 제어합니다.
+기본 moment와 스핀 상태 관련 경고는 상태바와 `Analysis` 탭에 모두 표시됩니다.
 
 생성 후 `Sites` 탭에는 모든 자기 원자가 입력 순서대로 element, CN, sublattice, sign,
 moment와 함께 표시됩니다. 하단에서 `n_up`, `n_down`, `n_zero`, 초기 net moment를 바로

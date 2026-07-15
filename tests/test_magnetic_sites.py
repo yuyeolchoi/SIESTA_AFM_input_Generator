@@ -1,7 +1,11 @@
 from pathlib import Path
 
+import pytest
+
 from siesta_afm.io import read_structure
 from siesta_afm.magnetic_sites import (
+    DEFAULT_ELEMENT_MOMENTS,
+    built_in_element_moments,
     load_moment_config,
     parse_atom_indices,
     resolve_moments,
@@ -12,6 +16,22 @@ from siesta_afm.workflows import generate_assignment
 
 
 ROOT = Path(__file__).parents[1]
+
+
+def test_builtin_element_moment_table_matches_documented_values() -> None:
+    assert DEFAULT_ELEMENT_MOMENTS == {
+        "Ti": 2.0,
+        "V": 3.0,
+        "Cr": 3.0,
+        "Mn": 5.0,
+        "Fe": 4.0,
+        "Co": 3.0,
+        "Ni": 2.0,
+        "Cu": 1.0,
+        "Gd": 7.0,
+    }
+    structure = Structure(["Ni", "Co", "Ni"], [[0, 0, 0]] * 3)
+    assert built_in_element_moments(structure, range(3)) == {"Ni": 2.0, "Co": 3.0}
 
 
 def test_atom_index_ranges_are_inclusive() -> None:
@@ -87,3 +107,81 @@ def test_coordination_moment_single_sublattice_does_not_warn() -> None:
     assert "moment was taken from a single value" not in "\n".join(
         assignment.warnings
     )
+
+
+def test_omitted_moment_uses_defaults_and_reports_every_applied_element() -> None:
+    structure = read_structure(
+        ROOT / "tests" / "fixtures" / "inverse_spinel_coordination.cif",
+        slab=True,
+    )
+    _, assignment, spins = generate_assignment(
+        structure,
+        ("Ni", "Co"),
+        "by-coordination",
+        None,
+        anion_species=["O"],
+    )
+    warning = "\n".join(assignment.warnings)
+    assert "using built-in default initial moments" in warning
+    assert "Ni=2.0, Co=3.0" in warning
+    assert "low-spin Co3+ is ~0" in warning
+    assert {abs(value) for value in spins.values()} == {2.0, 3.0}
+
+
+def test_default_warning_lists_only_values_not_overridden_by_site_file(
+    tmp_path: Path,
+) -> None:
+    structure = Structure(["Ni", "Co"], [[0, 0, 0], [1, 0, 0]])
+    site_file = tmp_path / "sites.csv"
+    site_file.write_text(
+        "atom_index,element,moment\n2,Co,0.4\n",
+        encoding="utf-8",
+    )
+    _, assignment, spins = generate_assignment(
+        structure,
+        ("Ni", "Co"),
+        "alternating-index",
+        None,
+        site_moment_file=str(site_file),
+    )
+    warning = assignment.warnings[0]
+    assert spins == {0: 2.0, 1: -0.4}
+    assert "Ni=2.0" in warning
+    assert "Co=3.0" not in warning
+
+
+def test_omitted_moment_rejects_element_without_default() -> None:
+    structure = Structure(["Ru"], [[0, 0, 0]])
+    with pytest.raises(
+        ValueError,
+        match=r"no built-in default for element Ru; pass --moment Ru=\.\.\.",
+    ):
+        generate_assignment(structure, ("Ru",), "alternating-index", None)
+
+
+def test_partial_moment_stays_an_error_with_builtin_hint() -> None:
+    structure = read_structure(
+        ROOT / "tests" / "fixtures" / "inverse_spinel_coordination.cif",
+        slab=True,
+    )
+    with pytest.raises(ValueError) as exc_info:
+        generate_assignment(
+            structure,
+            ("Ni", "Co"),
+            "by-coordination",
+            "Ni=2.0",
+            anion_species=["O"],
+        )
+    message = str(exc_info.value)
+    assert "no initial moment specified for magnetic atom 3 (Co@6)" in message
+    assert "the built-in default is Co=3.0" in message
+    assert "pass --moment Co@6=... or omit --moment" in message
+
+
+def test_explicit_moment_does_not_emit_builtin_warning() -> None:
+    structure = Structure(["Cu", "Cu"], [[0, 0, 0], [1, 0, 0]])
+    _, assignment, spins = generate_assignment(
+        structure, ("Cu",), "alternating-index", "0.5"
+    )
+    assert spins == {0: 0.5, 1: -0.5}
+    assert "built-in default" not in "\n".join(assignment.warnings)
