@@ -41,6 +41,7 @@ def test_writer_site_comments_roundtrip_and_show_coordination() -> None:
     )
     metadata = {
         "coordination_numbers": {0: 6, 2: 6, 4: 4},
+        "coordination_geometry": {0: "Oh", 2: "Oh", 4: "Td"},
         "sublattice_classification": {0: "up", 2: "up", 4: "down"},
     }
     text = render_dm_init_spin(
@@ -61,6 +62,18 @@ def test_writer_site_comments_roundtrip_and_show_coordination() -> None:
     ]
     assert warnings == []
     assert "# Co  (Td, CN=4)" in patch_fdf_text("SystemName test\n", text)
+
+
+def test_writer_does_not_guess_geometry_when_metadata_has_only_cn() -> None:
+    text = render_dm_init_spin(
+        {0: 1.0},
+        method="by-coordination",
+        magnetic_species=["Cu"],
+        metadata={"coordination_numbers": {0: 4}},
+        structure=Structure(["Cu"], [[0, 0, 0]]),
+    )
+    assert "# Cu  (CN=4)" in text
+    assert "Td" not in text
 
 
 def test_writer_preserves_legacy_rows_without_structure_or_when_opted_out() -> None:

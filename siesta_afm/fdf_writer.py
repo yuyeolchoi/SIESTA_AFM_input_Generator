@@ -72,7 +72,7 @@ def render_dm_init_spin(
         ]
     )
     coordination_numbers = metadata.get("coordination_numbers")
-    sublattices = metadata.get("sublattice_classification")
+    coordination_geometry = metadata.get("coordination_geometry")
     for index in sorted(rows):
         line = f"{index + 1:6d} {rows[index]:12.6f}"
         if structure is not None and site_comments and 0 <= index < len(structure):
@@ -80,16 +80,20 @@ def render_dm_init_spin(
             line += f"  # {symbol:<2}"
             if (
                 isinstance(coordination_numbers, Mapping)
-                and isinstance(sublattices, Mapping)
                 and index in coordination_numbers
-                and index in sublattices
             ):
                 coordination = int(coordination_numbers[index])
-                site_name = {4: "Td", 6: "Oh"}.get(coordination)
+                geometry = (
+                    str(coordination_geometry[index])
+                    if isinstance(coordination_geometry, Mapping)
+                    and index in coordination_geometry
+                    else ""
+                )
+                coordination_label = f"CN={coordination}"
                 detail = (
-                    f"{site_name}, CN={coordination}"
-                    if site_name
-                    else f"CN={coordination}"
+                    f"{geometry}, {coordination_label}"
+                    if geometry and geometry != coordination_label
+                    else coordination_label
                 )
                 line += f"  ({detail})"
         header.append(line)

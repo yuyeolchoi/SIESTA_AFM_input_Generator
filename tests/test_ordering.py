@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from siesta_afm.io import read_structure
-from siesta_afm.neighbors import build_neighbor_graph
+from siesta_afm.neighbors import build_neighbor_graph, classify_coordination_geometry
 from siesta_afm.ordering import (
     NonBipartiteError,
     alternating_index,
@@ -422,6 +422,30 @@ def test_co3o4_example_has_tetrahedral_and_octahedral_coordination() -> None:
         4: 8,
         6: 16,
     }
+    geometries = result.metadata["coordination_geometry"]
+    assert sum(value == "Td" for value in geometries.values()) == 8
+    assert sum(value == "Oh" for value in geometries.values()) == 16
+
+
+def test_geometry_classifier_distinguishes_tetrahedral_and_square_planar() -> None:
+    tetrahedral = [
+        [1, 1, 1],
+        [1, -1, -1],
+        [-1, 1, -1],
+        [-1, -1, 1],
+    ]
+    square_planar = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0]]
+    assert classify_coordination_geometry(tetrahedral) == "Td"
+    assert classify_coordination_geometry(square_planar) == "square-planar"
+    assert classify_coordination_geometry([[1, 0, 0], [-1, 0, 0]]) == "linear"
+
+
+def test_cuo_coordination_geometry_is_square_planar_not_tetrahedral() -> None:
+    atoms = read_structure(ROOT / "examples" / "CuO_bulk.cif")
+    indices = [index for index, symbol in enumerate(atoms.symbols) if symbol == "Cu"]
+    result = coordination_ordering(atoms, indices, anion_species=["O"])
+    assert set(result.metadata["coordination_numbers"].values()) == {4}
+    assert set(result.metadata["coordination_geometry"].values()) == {"square-planar"}
 
 
 def test_graph_coloring_triangle_uses_three_colors_and_default_spins() -> None:

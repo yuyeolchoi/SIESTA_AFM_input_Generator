@@ -242,22 +242,28 @@ python -m siesta_afm.gui
 siesta-afm-gui
 ```
 
-GUI는 구조 파일 선택, 자기 원소/방법/moment/cutoff/layer 설정, species·coordination
-sublattice, A/C/G preset과 임의 layer 방향, 회전·확대 가능한 3D 미리보기,
-graph 분석과 DM.InitSpin 미리보기를 제공합니다. 파라미터 변경은 400 ms
-디바운스로 자동 반영되며 `Live update`를 끌 수 있습니다. 기존 스핀 파일도 현재 구조
-위에서 열어 볼 수 있습니다.
+CIF, FDF, XYZ, POSCAR/CONTCAR 또는 XV를 열면 구조에 있는 모든 원소가 magnetization
+테이블에 즉시 표시됩니다. 기본 moment 표에 있는 원소만 기본 체크되고 음이온과 미지원
+원소는 체크 해제됩니다. 이 테이블이 `use | element | label | CN | value (μB) | count |
+role`의 정본입니다. use 셀을 더블클릭해 원소를 선택하고 label, value 및
+`by-species`의 role 셀을 더블클릭해 편집합니다. element, CN, count는 읽기 전용입니다.
+테이블 아래에는 동일한 `--magnetic-species ... --moment ...` CLI 옵션이 표시되어 배치
+스크립트로 그대로 옮길 수 있습니다. 원자별 지정용 `Site moment file`은 유지되며
+우선순위는 CLI와 동일한 site CSV > 테이블(`Element@CN` 또는 `Element`) 값입니다.
 
-`by-coordination`에서는 `Suggest` 버튼이 구조에 실제로 존재하는 `Element@CN` 조합을
-감지하고, 빈 moment에는 원소별 기본값을 채운 수정 가능한 자리별 템플릿을 만들며,
-단일 전역값이 입력되어 있으면 그 값을 재사용합니다. 감지된 조합과 원자 수는 필드
-아래에 계속 표시됩니다. `Site moment file`은
-CLI의 `--site-moment-file`과 같은 CSV를 받으며 site CSV > `Element@CN` > `Element` >
-전역값 우선순위를 그대로 사용합니다.
+`by-coordination`에서는 `(Element, CN)` 그룹마다 한 행을 만들고, CN만이 아니라 실제
+리간드 벡터로 표시 기하를 판정합니다. 예를 들어 170° 이상인 trans 리간드 쌍을 세어
+CuO의 square-planar Cu(CN=4)와 스피넬의 tetrahedral Co(CN=4)를 구분합니다. 기하
+라벨은 편집 가능한 추정 표시이고 moment 문법은 계속 `Element@CN`입니다. 사용자가
+수정한 라벨은 해당 `DM.InitSpin` 주석에도 반영됩니다. 배위 분석에 실패해도 테이블을
+비우지 않고 원소 단위 행으로 폴백하며 상태바에 이유를 표시합니다.
 
-moment 필드의 초기값은 비어 있으며(`blank = built-in defaults`), `Include element/CN
-comments in DM.InitSpin` 체크박스는 CLI의 `--no-site-comments`와 같은 기능을 제어합니다.
-기본 moment와 스핀 상태 관련 경고는 상태바와 `Analysis` 탭에 모두 표시됩니다.
+선택한 method에 필요한 설정 그룹만 표시됩니다. 입력과 결과 영역은 드래그 가능한
+분할창이고, 짧은 라벨과 별도 도움말을 사용해 기본 창 크기에서도 입력 위젯이 잘리지
+않습니다. 파라미터 변경은 계속 400 ms 디바운스로 자동 반영됩니다. `Include element/CN
+comments in DM.InitSpin` 체크박스는 CLI의 `--no-site-comments`와 같은 기능을 제어하고,
+기본 moment와 스핀 상태 경고는 상태바와 `Analysis` 탭에 표시됩니다. 기존 스핀 파일도
+현재 구조 위에서 열 수 있습니다.
 
 생성 후 `Sites` 탭에는 모든 자기 원자가 입력 순서대로 element, CN, sublattice, sign,
 moment와 함께 표시됩니다. 하단에서 `n_up`, `n_down`, `n_zero`, 초기 net moment를 바로

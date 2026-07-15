@@ -10,10 +10,10 @@ from .fdf_writer import patch_fdf_text, render_dm_init_spin
 from .io import parse_dm_init_spin, read_structure
 from .magnetic_sites import (
     DEFAULT_ELEMENT_MOMENTS,
-    parse_moment_arguments,
     select_magnetic_sites,
 )
-from .ordering import SpinAssignment, coordination_ordering
+from .neighbors import classify_coordination_geometry
+from .ordering import SpinAssignment, analyze_coordination_sites
 from .structure import Structure
 from .validation import (
     ValidationReport,
@@ -39,6 +39,7 @@ _METHODS = [
     "by-coordination",
 ]
 _COLOR_MODES = {"spin sign": "sign", "spin value": "value"}
+_LEFT_PANEL_MIN_WIDTH = 600
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +68,7 @@ class GenerationParams:
     up_coordination: tuple[int, ...] = (6,)
     down_coordination: tuple[int, ...] = (4,)
     coordination_tolerance: int = 0
+    coordination_labels: tuple[tuple[str, int, str], ...] = ()
     max_colors: int = 4
     color_spins: str | None = None
     balance_colors: bool = False
@@ -96,6 +98,266 @@ class SpinFileResult:
     block: str
     validation: ValidationReport
     warnings: tuple[str, ...]
+
+
+@dataclass(slots=True)
+class MagnetizationRow:
+    """One editable row in the structure-derived magnetization table."""
+
+    use: bool
+    element: str
+    label: str
+    coordination: int | None
+    value: str
+    count: int
+    role: str = "-"
+
+
+def _element_counts(structure: Structure) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for symbol in structure.symbols:
+        counts[symbol] = counts.get(symbol, 0) + 1
+    return counts
+
+
+def magnetic_species_from_rows(rows: Sequence[MagnetizationRow]) -> tuple[str, ...]:
+    """Return checked elements once each, preserving table order."""
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        normalized = row.element.lower()
+        if row.use and normalized not in seen:
+            result.append(row.element)
+            seen.add(normalized)
+    return tuple(result)
+
+
+def moment_text_from_rows(
+    rows: Sequence[MagnetizationRow], method: str
+) -> str | None:
+    """Derive the existing CLI moment syntax from checked table rows."""
+
+    values: list[str] = []
+    seen: set[tuple[str, int | None]] = set()
+    for row in rows:
+        value = row.value.strip()
+        if not row.use or not value:
+            continue
+        coordination = row.coordination if method == "by-coordination" else None
+        key = (row.element.lower(), coordination)
+        if key in seen:
+            continue
+        seen.add(key)
+        name = (
+            f"{row.element}@{coordination}"
+            if coordination is not None
+            else row.element
+        )
+        values.append(f"{name}={value}")
+    return " ".join(values) or None
+
+
+def species_roles_from_rows(
+    rows: Sequence[MagnetizationRow],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return checked by-species elements grouped by their editable role."""
+
+    up: list[str] = []
+    down: list[str] = []
+    for element in magnetic_species_from_rows(rows):
+        role = next(
+            (
+                row.role.lower()
+                for row in rows
+                if row.use and row.element.lower() == element.lower()
+            ),
+            "-",
+        )
+        if role == "up":
+            up.append(element)
+        elif role == "down":
+            down.append(element)
+    return tuple(up), tuple(down)
+
+
+def equivalent_cli_options(rows: Sequence[MagnetizationRow], method: str) -> str:
+    """Render the table's equivalent reusable CLI options."""
+
+    species = magnetic_species_from_rows(rows)
+    parts = ["--magnetic-species", *species]
+    moment = moment_text_from_rows(rows, method)
+    if moment:
+        parts.extend(("--moment", moment))
+    if method == "by-species":
+        up, down = species_roles_from_rows(rows)
+        if up:
+            parts.extend(("--up-species", *up))
+        if down:
+            parts.extend(("--down-species", *down))
+    return " ".join(parts)
+
+
+def magnetization_rows_from_structure(
+    structure: Structure,
+    method: str,
+    *,
+    existing_rows: Sequence[MagnetizationRow] = (),
+    anion_species: Sequence[str] | None = None,
+    anion_cutoff: str | float | None = "auto",
+) -> list[MagnetizationRow]:
+    """Build editable rows from a structure, preserving prior values where possible."""
+
+    counts = _element_counts(structure)
+    defaults = {
+        element.lower(): value for element, value in DEFAULT_ELEMENT_MOMENTS.items()
+    }
+    if existing_rows:
+        use_by_element = {
+            element.lower(): any(
+                row.use for row in existing_rows if row.element.lower() == element.lower()
+            )
+            for element in counts
+        }
+    else:
+        use_by_element = {element.lower(): element.lower() in defaults for element in counts}
+    values_by_site = {
+        (row.element.lower(), row.coordination): row.value
+        for row in existing_rows
+        if row.value.strip()
+    }
+    values_by_element: dict[str, str] = {}
+    roles_by_element: dict[str, str] = {}
+    labels_by_site: dict[tuple[str, int], str] = {}
+    for row in existing_rows:
+        normalized = row.element.lower()
+        if row.value.strip():
+            values_by_element.setdefault(normalized, row.value)
+        if row.role in {"up", "down"}:
+            roles_by_element.setdefault(normalized, row.role)
+        if row.coordination is not None and row.label not in {"", "-"}:
+            labels_by_site[(normalized, row.coordination)] = row.label
+
+    if method != "by-coordination":
+        used_order = [
+            element for element in counts if use_by_element.get(element.lower(), False)
+        ]
+        rows: list[MagnetizationRow] = []
+        for element, count in counts.items():
+            normalized = element.lower()
+            use = use_by_element.get(normalized, False)
+            value = values_by_element.get(normalized)
+            if value is None and use and normalized in defaults:
+                value = f"{defaults[normalized]:.1f}"
+            role = "-"
+            if method == "by-species" and use:
+                role = roles_by_element.get(
+                    normalized, "up" if element == used_order[0] else "down"
+                )
+            rows.append(
+                MagnetizationRow(
+                    use=use,
+                    element=element,
+                    label="-" if use else "",
+                    coordination=None,
+                    value=(value or "") if use else "",
+                    count=count,
+                    role=role,
+                )
+            )
+        return rows
+
+    selected = [
+        index
+        for index, symbol in enumerate(structure.symbols)
+        if use_by_element.get(symbol.lower(), False)
+    ]
+    if not selected:
+        return [
+            MagnetizationRow(False, element, "", None, "", count, "-")
+            for element, count in counts.items()
+        ]
+    analysis = analyze_coordination_sites(
+        structure,
+        selected,
+        anion_species=anion_species,
+        anion_cutoff=anion_cutoff,
+    )
+    selected_species = [
+        element for element in counts if use_by_element.get(element.lower(), False)
+    ]
+    combination_counts = _coordination_combination_counts(
+        structure,
+        selected,
+        analysis.coordination_numbers,
+        selected_species,
+    )
+    rows = []
+    for (element, coordination), count in combination_counts.items():
+        indices = [
+            index
+            for index in selected
+            if structure.symbols[index].lower() == element.lower()
+            and analysis.coordination_numbers[index] == coordination
+        ]
+        normalized = element.lower()
+        labels = {
+            classify_coordination_geometry(analysis.ligand_vectors[index])
+            for index in indices
+        }
+        inferred_label = next(iter(labels)) if len(labels) == 1 else "mixed"
+        value = values_by_site.get((normalized, coordination))
+        if value is None:
+            value = values_by_element.get(normalized)
+        if value is None and normalized in defaults:
+            value = f"{defaults[normalized]:.1f}"
+        rows.append(
+            MagnetizationRow(
+                True,
+                element,
+                labels_by_site.get((normalized, coordination), inferred_label),
+                coordination,
+                value or "",
+                count,
+                "-",
+            )
+        )
+    for element, count in counts.items():
+        if not use_by_element.get(element.lower(), False):
+            rows.append(MagnetizationRow(False, element, "", None, "", count, "-"))
+    return rows
+
+
+def safe_magnetization_rows_from_structure(
+    structure: Structure,
+    method: str,
+    *,
+    existing_rows: Sequence[MagnetizationRow] = (),
+    anion_species: Sequence[str] | None = None,
+    anion_cutoff: str | float | None = "auto",
+) -> tuple[list[MagnetizationRow], str | None]:
+    """Build table rows and fall back safely when coordination analysis fails."""
+
+    try:
+        return (
+            magnetization_rows_from_structure(
+                structure,
+                method,
+                existing_rows=existing_rows,
+                anion_species=anion_species,
+                anion_cutoff=anion_cutoff,
+            ),
+            None,
+        )
+    except ValueError as exc:
+        if method != "by-coordination":
+            raise
+        rows = magnetization_rows_from_structure(
+            structure,
+            "layer",
+            existing_rows=existing_rows,
+        )
+        return rows, f"Coordination analysis unavailable; using element rows: {exc}"
 
 
 def _coordination_combination_counts(
@@ -136,74 +398,15 @@ def detect_coordination_combinations(
     """Count detected magnetic ``(element, CN)`` site types in display order."""
 
     indices = select_magnetic_sites(structure, magnetic_species)
-    assignment = coordination_ordering(
+    analysis = analyze_coordination_sites(
         structure,
         indices,
         anion_species=anion_species,
         anion_cutoff=anion_cutoff,
-        up_coordination=up_coordination,
-        down_coordination=down_coordination,
-        coordination_tolerance=coordination_tolerance,
     )
-    coordinations = assignment.metadata["coordination_numbers"]
-    if not isinstance(coordinations, dict):
-        raise ValueError("coordination analysis did not return per-atom CN values")
     return _coordination_combination_counts(
-        structure, indices, coordinations, magnetic_species
+        structure, indices, analysis.coordination_numbers, magnetic_species
     )
-
-
-def format_detected_coordination(
-    counts: dict[tuple[str, int], int],
-) -> str:
-    details = ", ".join(
-        f"{element}@{coordination} ({count} {'atom' if count == 1 else 'atoms'})"
-        for (element, coordination), count in counts.items()
-    )
-    return "detected: " + (details or "none")
-
-
-def coordination_moment_template(
-    counts: dict[tuple[str, int], int], default_moment: float | None = None
-) -> str:
-    """Build an editable ``Element@CN=value`` moment template."""
-
-    defaults_by_lower = {
-        element.lower(): value for element, value in DEFAULT_ELEMENT_MOMENTS.items()
-    }
-    values: list[str] = []
-    for element, coordination in counts:
-        if default_moment is None:
-            if element.lower() not in defaults_by_lower:
-                raise ValueError(
-                    f"no built-in default for element {element}; "
-                    f"pass --moment {element}=..."
-                )
-            value = defaults_by_lower[element.lower()]
-        else:
-            value = abs(default_moment)
-        values.append(f"{element}@{coordination}={value:g}")
-    return " ".join(values)
-
-
-def suggested_coordination_moment_text(
-    current_text: str, counts: dict[tuple[str, int], int]
-) -> str | None:
-    """Return a safe suggestion only for blank or single-global input."""
-
-    text = current_text.strip()
-    if not text:
-        try:
-            return coordination_moment_template(counts)
-        except ValueError:
-            return None
-    try:
-        global_moment, by_element, by_coordination = parse_moment_arguments(text)
-    except ValueError:
-        return None
-    if by_element or by_coordination or global_moment is None:
-        return None
-    return coordination_moment_template(counts, global_moment)
 
 
 def site_assignment_rows(
@@ -311,6 +514,20 @@ def run_generation(params: GenerationParams) -> GenerationResult:
         balance_colors=params.balance_colors,
         seed=params.seed,
     )
+    if params.method == "by-coordination" and params.coordination_labels:
+        coordinations = assignment.metadata.get("coordination_numbers")
+        if isinstance(coordinations, dict):
+            labels = {
+                (element.lower(), coordination): label
+                for element, coordination, label in params.coordination_labels
+                if label
+            }
+            geometry = dict(assignment.metadata.get("coordination_geometry", {}))
+            for index in indices:
+                key = (structure.symbols[index].lower(), int(coordinations[index]))
+                if key in labels:
+                    geometry[index] = labels[key]
+            assignment.metadata["coordination_geometry"] = geometry
     block = render_dm_init_spin(
         spins,
         method=assignment.method,
@@ -476,14 +693,21 @@ class DesktopApp:
         self.canvas: Any | None = None
         self.toolbar: Any | None = None
         self._live_after_id: str | None = None
+        self._table_after_id: str | None = None
         self._reset_camera = True
         self._traces_ready = False
+        self.magnetization_rows: list[MagnetizationRow] = []
+        self._cell_editor: Any | None = None
+        self.control_inputs: list[Any] = []
+        self.method_option_frames: dict[str, Any] = {}
+        self._coordination_fallback: str | None = None
+        self._pane_width_initialized = False
 
         root.title("SIESTA AFM initial-spin generator")
         root.geometry("1450x900")
         root.minsize(1050, 700)
         root.protocol("WM_DELETE_WINDOW", self._close)
-        root.columnconfigure(1, weight=1)
+        root.columnconfigure(0, weight=1)
         root.rowconfigure(0, weight=1)
 
         self._create_variables()
@@ -492,16 +716,16 @@ class DesktopApp:
         self._install_traces()
         self._traces_ready = True
         self._sync_cutoff_state()
+        self._show_method_options()
+        self._set_initial_pane_width()
 
     def _create_variables(self) -> None:
         tk = self.tk
         self.file_var = tk.StringVar(value="No structure selected")
-        self.species_var = tk.StringVar(value="Cu")
         self.method_var = tk.StringVar(value="layer")
-        self.moment_var = tk.StringVar(value="")
         self.site_moment_file_var = tk.StringVar(value="")
         self.site_comments_var = tk.BooleanVar(value=True)
-        self.detected_coordination_var = tk.StringVar(value="detected: -")
+        self.cli_options_var = tk.StringVar(value="--magnetic-species")
         self.axis_var = tk.StringVar(value="z")
         self.layer_direction_var = tk.StringVar(value="")
         self.fractional_layers_var = tk.BooleanVar(value=False)
@@ -512,8 +736,6 @@ class DesktopApp:
         self.q_vector_var = tk.StringVar(value="0.5 0.5 0.5")
         self.afm_type_var = tk.StringVar(value="custom")
         self.allow_frustrated_var = tk.BooleanVar(value=False)
-        self.up_species_var = tk.StringVar(value="")
-        self.down_species_var = tk.StringVar(value="")
         self.anion_species_var = tk.StringVar(value="")
         self.anion_cutoff_var = tk.StringVar(value="auto")
         self.up_coordination_var = tk.StringVar(value="6")
@@ -530,11 +752,16 @@ class DesktopApp:
 
     def _build_controls(self) -> None:
         ttk = self.ttk
-        container = ttk.Frame(self.root)
-        container.grid(row=0, column=0, sticky="nsew")
+        self.main_pane = ttk.PanedWindow(self.root, orient="horizontal")
+        self.main_pane.grid(row=0, column=0, sticky="nsew")
+        self.main_pane.bind(
+            "<Map>", lambda _event: self.root.after_idle(self._set_initial_pane_width)
+        )
+        container = ttk.Frame(self.main_pane)
+        self.main_pane.add(container, weight=0)
         container.columnconfigure(0, weight=1)
         container.rowconfigure(0, weight=1)
-        canvas = self.tk.Canvas(container, width=410, highlightthickness=0)
+        canvas = self.tk.Canvas(container, highlightthickness=0)
         scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
         canvas.grid(row=0, column=0, sticky="nsew")
@@ -549,7 +776,8 @@ class DesktopApp:
             "<Configure>",
             lambda event: canvas.itemconfigure(panel_window, width=event.width),
         )
-        panel.columnconfigure(1, weight=1)
+        panel.columnconfigure(0, minsize=115, weight=0)
+        panel.columnconfigure(1, minsize=160, weight=1)
 
         ttk.Label(panel, text="Structure").grid(row=0, column=0, sticky="w")
         ttk.Button(
@@ -560,32 +788,77 @@ class DesktopApp:
         )
 
         row = 2
-        row = self._entry_row(panel, row, "Magnetic species", self.species_var)
         row = self._combo_row(panel, row, "Method", self.method_var, _METHODS)
+
+        table_frame = ttk.LabelFrame(panel, text="Magnetic species and moments", padding=5)
+        table_frame.grid(row=row, column=0, columnspan=2, sticky="nsew", pady=(5, 4))
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
+        columns = ("use", "element", "label", "CN", "value", "count", "role")
+        self.magnetization_tree = ttk.Treeview(
+            table_frame,
+            columns=columns,
+            show="headings",
+            height=7,
+            selectmode="browse",
+        )
+        headings = {
+            "use": "use",
+            "element": "element",
+            "label": "label",
+            "CN": "CN",
+            "value": "value (μB)",
+            "count": "count",
+            "role": "role",
+        }
+        widths = {
+            "use": 42,
+            "element": 62,
+            "label": 125,
+            "CN": 42,
+            "value": 80,
+            "count": 50,
+            "role": 58,
+        }
+        for column in columns:
+            self.magnetization_tree.heading(column, text=headings[column])
+            self.magnetization_tree.column(
+                column,
+                width=widths[column],
+                minwidth=widths[column],
+                stretch=column == "label",
+                anchor="center",
+            )
+        table_y_scroll = ttk.Scrollbar(
+            table_frame, orient="vertical", command=self.magnetization_tree.yview
+        )
+        table_x_scroll = ttk.Scrollbar(
+            table_frame, orient="horizontal", command=self.magnetization_tree.xview
+        )
+        self.magnetization_tree.configure(
+            yscrollcommand=table_y_scroll.set,
+            xscrollcommand=table_x_scroll.set,
+        )
+        self.magnetization_tree.grid(row=0, column=0, sticky="nsew")
+        table_y_scroll.grid(row=0, column=1, sticky="ns")
+        table_x_scroll.grid(row=1, column=0, sticky="ew")
+        self.magnetization_tree.bind("<Double-1>", self._edit_magnetization_cell)
+        ttk.Label(
+            table_frame,
+            text="Double-click use, label, value, or role to edit. CN and count are read-only.",
+            foreground="#666666",
+            wraplength=530,
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(3, 0))
+        row += 1
+        ttk.Label(panel, text="Equivalent CLI").grid(row=row, column=0, sticky="nw")
         ttk.Label(
             panel,
-            text="Moment (blank = built-in defaults; value / Element@CN=value)",
-        ).grid(
-            row=row, column=0, sticky="w"
-        )
-        moment_controls = ttk.Frame(panel)
-        moment_controls.grid(row=row, column=1, sticky="ew", padx=(6, 0), pady=3)
-        moment_controls.columnconfigure(0, weight=1)
-        ttk.Entry(moment_controls, textvariable=self.moment_var).grid(
-            row=0, column=0, sticky="ew"
-        )
-        ttk.Button(
-            moment_controls,
-            text="Suggest",
-            command=self._suggest_coordination_moments,
-        ).grid(row=0, column=1, padx=(4, 0))
+            textvariable=self.cli_options_var,
+            wraplength=460,
+            justify="left",
+        ).grid(row=row, column=1, sticky="ew", padx=(6, 0), pady=3)
         row += 1
-        ttk.Label(
-            panel,
-            textvariable=self.detected_coordination_var,
-            wraplength=370,
-        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 3))
-        row += 1
+
         ttk.Checkbutton(
             panel,
             text="Include element/CN comments in DM.InitSpin",
@@ -596,69 +869,147 @@ class DesktopApp:
         site_file_controls = ttk.Frame(panel)
         site_file_controls.grid(row=row, column=1, sticky="ew", padx=(6, 0), pady=3)
         site_file_controls.columnconfigure(0, weight=1)
-        ttk.Entry(
+        site_file_entry = ttk.Entry(
             site_file_controls, textvariable=self.site_moment_file_var
-        ).grid(row=0, column=0, sticky="ew")
+        )
+        site_file_entry.grid(row=0, column=0, sticky="ew")
+        self.control_inputs.append(site_file_entry)
         ttk.Button(
             site_file_controls,
             text="Browse...",
             command=self._choose_site_moment_file,
         ).grid(row=0, column=1, padx=(4, 0))
         row += 1
-        row = self._combo_row(panel, row, "Layer axis", self.axis_var, ["z", "x", "y"])
-        row = self._entry_row(
-            panel, row, "Layer direction (dx dy dz)", self.layer_direction_var
-        )
-        ttk.Checkbutton(
-            panel, text="Fractional layer coordinates", variable=self.fractional_layers_var
-        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=3)
-        row += 1
-        ttk.Checkbutton(
-            panel, text="Automatic first-shell cutoff", variable=self.auto_cutoff_var
-        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=3)
-        row += 1
-        ttk.Label(panel, text="Neighbor cutoff (Å)").grid(row=row, column=0, sticky="w")
-        self.cutoff_entry = ttk.Entry(panel, textvariable=self.cutoff_var)
-        self.cutoff_entry.grid(row=row, column=1, sticky="ew", padx=(6, 0), pady=3)
-        row += 1
-        row = self._entry_row(
-            panel,
-            row,
-            "Layer tolerance — Å (fractional units with --fractional-layers)",
-            self.tolerance_var,
-        )
+
         ttk.Checkbutton(panel, text="Slab (periodic xy)", variable=self.slab_var).grid(
             row=row, column=0, columnspan=2, sticky="w", pady=3
         )
         row += 1
-        row = self._entry_row(panel, row, "q-vector", self.q_vector_var)
-        row = self._combo_row(
-            panel, row, "AFM type preset", self.afm_type_var, ["custom", "A", "C", "G"]
+
+        layer_frame = self._option_frame(panel, row, "Layer options")
+        option_row = self._combo_row(
+            layer_frame, 0, "Axis", self.axis_var, ["z", "x", "y"]
         )
-        row = self._entry_row(panel, row, "Up species", self.up_species_var)
-        row = self._entry_row(panel, row, "Down species", self.down_species_var)
-        row = self._entry_row(panel, row, "Anion species (blank=auto)", self.anion_species_var)
-        row = self._entry_row(panel, row, "Anion cutoff (Å or auto)", self.anion_cutoff_var)
-        row = self._entry_row(panel, row, "Up coordination", self.up_coordination_var)
-        row = self._entry_row(panel, row, "Down coordination", self.down_coordination_var)
-        row = self._entry_row(
-            panel, row, "Coordination tolerance", self.coordination_tolerance_var
+        option_row = self._entry_row(
+            layer_frame, option_row, "Direction", self.layer_direction_var
         )
-        row = self._entry_row(panel, row, "Maximum graph colors", self.max_colors_var)
-        row = self._entry_row(
-            panel, row, "Color spins (+1,-1,0; blank=default)", self.color_spins_var
-        )
+        self._help_row(layer_frame, option_row, "Optional dx dy dz vector.")
+        option_row += 1
         ttk.Checkbutton(
-            panel, text="Balance graph colors", variable=self.balance_colors_var
-        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=3)
+            layer_frame,
+            text="Fractional layer coordinates",
+            variable=self.fractional_layers_var,
+        ).grid(row=option_row, column=0, columnspan=2, sticky="w", pady=3)
+        option_row += 1
+        option_row = self._entry_row(
+            layer_frame, option_row, "Tolerance (Å)", self.tolerance_var
+        )
+        self._help_row(
+            layer_frame,
+            option_row,
+            "Fractional units when fractional layers are enabled.",
+        )
+        self.method_option_frames["layer"] = layer_frame
         row += 1
-        row = self._entry_row(panel, row, "Random / permutation seed", self.seed_var)
+
+        neighbor_frame = self._option_frame(panel, row, "Neighbor options")
         ttk.Checkbutton(
-            panel,
+            neighbor_frame,
+            text="Automatic first-shell cutoff",
+            variable=self.auto_cutoff_var,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=3)
+        ttk.Label(neighbor_frame, text="Cutoff (Å)").grid(
+            row=1, column=0, sticky="w"
+        )
+        self.cutoff_entry = ttk.Entry(neighbor_frame, textvariable=self.cutoff_var)
+        self.cutoff_entry.grid(row=1, column=1, sticky="ew", padx=(6, 0), pady=3)
+        self.control_inputs.append(self.cutoff_entry)
+        self.frustrated_check = ttk.Checkbutton(
+            neighbor_frame,
             text="Allow frustrated heuristic",
             variable=self.allow_frustrated_var,
-        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=3)
+        )
+        self.frustrated_check.grid(
+            row=2, column=0, columnspan=2, sticky="w", pady=3
+        )
+        self.checker_tolerance_label = ttk.Label(
+            neighbor_frame, text="Plane tolerance (Å)", wraplength=105
+        )
+        self.checker_tolerance_label.grid(row=3, column=0, sticky="w")
+        self.checker_tolerance_entry = ttk.Entry(
+            neighbor_frame, textvariable=self.tolerance_var
+        )
+        self.checker_tolerance_entry.grid(
+            row=3, column=1, sticky="ew", padx=(6, 0), pady=3
+        )
+        self.control_inputs.append(self.checker_tolerance_entry)
+        self.method_option_frames["neighbor"] = neighbor_frame
         row += 1
+
+        propagation_frame = self._option_frame(panel, row, "Propagation-vector options")
+        option_row = self._entry_row(
+            propagation_frame, 0, "q-vector", self.q_vector_var
+        )
+        self._combo_row(
+            propagation_frame,
+            option_row,
+            "AFM preset",
+            self.afm_type_var,
+            ["custom", "A", "C", "G"],
+        )
+        self.method_option_frames["propagation-vector"] = propagation_frame
+        row += 1
+
+        coordination_frame = self._option_frame(panel, row, "Coordination options")
+        option_row = self._entry_row(
+            coordination_frame, 0, "Anion species", self.anion_species_var
+        )
+        self._help_row(coordination_frame, option_row, "Blank enables safe auto-detection.")
+        option_row += 1
+        option_row = self._entry_row(
+            coordination_frame, option_row, "Anion cutoff", self.anion_cutoff_var
+        )
+        self._help_row(coordination_frame, option_row, "Use auto or a distance in Å.")
+        option_row += 1
+        option_row = self._entry_row(
+            coordination_frame, option_row, "Up CN", self.up_coordination_var
+        )
+        option_row = self._entry_row(
+            coordination_frame, option_row, "Down CN", self.down_coordination_var
+        )
+        self._entry_row(
+            coordination_frame,
+            option_row,
+            "CN tolerance",
+            self.coordination_tolerance_var,
+        )
+        self.method_option_frames["by-coordination"] = coordination_frame
+        row += 1
+
+        graph_frame = self._option_frame(panel, row, "Graph-coloring options")
+        option_row = self._entry_row(
+            graph_frame, 0, "Maximum colors", self.max_colors_var
+        )
+        option_row = self._entry_row(
+            graph_frame, option_row, "Color spins", self.color_spins_var
+        )
+        self._help_row(graph_frame, option_row, "+1,-1,0; blank uses the default map.")
+        option_row += 1
+        ttk.Checkbutton(
+            graph_frame,
+            text="Balance graph colors",
+            variable=self.balance_colors_var,
+        ).grid(row=option_row, column=0, columnspan=2, sticky="w", pady=3)
+        option_row += 1
+        self._entry_row(graph_frame, option_row, "Seed", self.seed_var)
+        self.method_option_frames["graph-coloring"] = graph_frame
+        row += 1
+
+        random_frame = self._option_frame(panel, row, "Random options")
+        self._entry_row(random_frame, 0, "Seed", self.seed_var)
+        self.method_option_frames["random"] = random_frame
+        row += 1
+
         row = self._combo_row(
             panel,
             row,
@@ -705,8 +1056,8 @@ class DesktopApp:
 
     def _build_results(self) -> None:
         ttk = self.ttk
-        panel = ttk.Frame(self.root, padding=(0, 10, 10, 10))
-        panel.grid(row=0, column=1, sticky="nsew")
+        panel = ttk.Frame(self.main_pane, padding=(0, 10, 10, 10))
+        self.main_pane.add(panel, weight=1)
         panel.columnconfigure(0, weight=1)
         panel.rowconfigure(1, weight=3)
         panel.rowconfigure(2, weight=2)
@@ -785,13 +1136,17 @@ class DesktopApp:
             anchor="w",
             padding=(6, 3),
         )
-        status.grid(row=1, column=0, columnspan=2, sticky="ew")
+        status.grid(row=1, column=0, sticky="ew")
 
     def _entry_row(self, parent: Any, row: int, label: str, variable: Any) -> int:
-        self.ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w")
-        self.ttk.Entry(parent, textvariable=variable).grid(
+        self.ttk.Label(parent, text=label, wraplength=110).grid(
+            row=row, column=0, sticky="w"
+        )
+        entry = self.ttk.Entry(parent, textvariable=variable)
+        entry.grid(
             row=row, column=1, sticky="ew", padx=(6, 0), pady=3
         )
+        self.control_inputs.append(entry)
         return row + 1
 
     def _combo_row(
@@ -802,11 +1157,186 @@ class DesktopApp:
         variable: Any,
         values: Sequence[str],
     ) -> int:
-        self.ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w")
-        self.ttk.Combobox(
+        self.ttk.Label(parent, text=label, wraplength=110).grid(
+            row=row, column=0, sticky="w"
+        )
+        combobox = self.ttk.Combobox(
             parent, textvariable=variable, values=list(values), state="readonly"
-        ).grid(row=row, column=1, sticky="ew", padx=(6, 0), pady=3)
+        )
+        combobox.grid(row=row, column=1, sticky="ew", padx=(6, 0), pady=3)
+        self.control_inputs.append(combobox)
         return row + 1
+
+    def _option_frame(self, parent: Any, row: int, title: str) -> Any:
+        frame = self.ttk.LabelFrame(parent, text=title, padding=6)
+        frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=4)
+        frame.columnconfigure(0, minsize=105, weight=0)
+        frame.columnconfigure(1, minsize=160, weight=1)
+        return frame
+
+    def _help_row(self, parent: Any, row: int, text: str) -> None:
+        self.ttk.Label(
+            parent,
+            text=text,
+            foreground="#666666",
+            wraplength=430,
+            justify="left",
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 3))
+
+    def _set_initial_pane_width(self) -> None:
+        if self._pane_width_initialized:
+            return
+        self.root.update_idletasks()
+        if self.main_pane.winfo_width() > 1 and len(self.main_pane.panes()) > 1:
+            self.main_pane.sashpos(0, _LEFT_PANEL_MIN_WIDTH)
+            self.main_pane.bind("<ButtonRelease-1>", self._enforce_left_pane_width)
+            self._pane_width_initialized = True
+
+    def _enforce_left_pane_width(self, _event: object | None = None) -> None:
+        if len(self.main_pane.panes()) > 1 and self.main_pane.sashpos(0) < _LEFT_PANEL_MIN_WIDTH:
+            self.main_pane.sashpos(0, _LEFT_PANEL_MIN_WIDTH)
+
+    def _show_method_options(self) -> None:
+        for frame in self.method_option_frames.values():
+            frame.grid_remove()
+        method = self.method_var.get()
+        active: list[str] = []
+        if method == "layer":
+            active.append("layer")
+        if method in {"neighbor-bipartite", "checkerboard", "graph-coloring"}:
+            active.append("neighbor")
+        if method == "propagation-vector":
+            active.append("propagation-vector")
+        if method == "by-coordination":
+            active.append("by-coordination")
+        if method == "graph-coloring":
+            active.append("graph-coloring")
+        if method == "random":
+            active.append("random")
+        for name in active:
+            self.method_option_frames[name].grid()
+        if method == "neighbor-bipartite":
+            self.frustrated_check.grid()
+        else:
+            self.frustrated_check.grid_remove()
+        if method == "checkerboard":
+            self.checker_tolerance_label.grid()
+            self.checker_tolerance_entry.grid()
+        else:
+            self.checker_tolerance_label.grid_remove()
+            self.checker_tolerance_entry.grid_remove()
+
+    def _populate_magnetization_tree(self) -> None:
+        for item in self.magnetization_tree.get_children():
+            self.magnetization_tree.delete(item)
+        for index, row in enumerate(self.magnetization_rows):
+            coordination = (
+                row.coordination
+                if row.coordination is not None
+                else ("-" if row.use else "")
+            )
+            self.magnetization_tree.insert(
+                "",
+                "end",
+                iid=str(index),
+                values=(
+                    "✓" if row.use else "☐",
+                    row.element,
+                    row.label,
+                    coordination,
+                    row.value,
+                    row.count,
+                    row.role,
+                ),
+            )
+        self.cli_options_var.set(
+            equivalent_cli_options(self.magnetization_rows, self.method_var.get())
+        )
+
+    def _edit_magnetization_cell(self, event: Any) -> None:
+        item = self.magnetization_tree.identify_row(event.y)
+        column = self.magnetization_tree.identify_column(event.x)
+        if not item or not column:
+            return
+        row_index = int(item)
+        column_index = int(column.removeprefix("#")) - 1
+        names = ("use", "element", "label", "CN", "value", "count", "role")
+        name = names[column_index]
+        row = self.magnetization_rows[row_index]
+        if name == "use":
+            new_value = not row.use
+            for candidate in self.magnetization_rows:
+                if candidate.element.lower() == row.element.lower():
+                    candidate.use = new_value
+                    if not new_value:
+                        candidate.label = ""
+                        candidate.coordination = None
+                        candidate.value = ""
+                        candidate.role = "-"
+            self._table_changed(refresh=True)
+            return
+        if name == "label" and self.method_var.get() != "by-coordination":
+            return
+        if name == "role" and self.method_var.get() != "by-species":
+            return
+        if name not in {"label", "value", "role"} or not row.use:
+            return
+        bbox = self.magnetization_tree.bbox(item, column)
+        if not bbox:
+            return
+        if self._cell_editor is not None:
+            self._cell_editor.destroy()
+        x, y, width, height = bbox
+        current = row.label if name == "label" else row.value if name == "value" else row.role
+        variable = self.tk.StringVar(value=current)
+        if name == "role":
+            editor = self.ttk.Combobox(
+                self.magnetization_tree,
+                textvariable=variable,
+                values=("up", "down"),
+                state="readonly",
+            )
+        else:
+            editor = self.ttk.Entry(self.magnetization_tree, textvariable=variable)
+        self._cell_editor = editor
+        editor.place(x=x, y=y, width=width, height=height)
+        editor.focus_set()
+
+        def close(*, save: bool) -> None:
+            if self._cell_editor is None:
+                return
+            value = variable.get().strip()
+            if save:
+                if name == "value" and value:
+                    try:
+                        if float(value) < 0:
+                            raise ValueError
+                    except ValueError:
+                        self.status_var.set("Moment values must be nonnegative numbers.")
+                        return
+                if name == "label":
+                    row.label = value
+                elif name == "value":
+                    row.value = value
+                else:
+                    row.role = value
+                self._table_changed()
+            self._cell_editor.destroy()
+            self._cell_editor = None
+
+        editor.bind("<Return>", lambda _event: close(save=True))
+        editor.bind("<Escape>", lambda _event: close(save=False))
+        editor.bind("<FocusOut>", lambda _event: close(save=True))
+
+    def _table_changed(self, *, refresh: bool = False) -> None:
+        if refresh:
+            self._refresh_magnetization_table()
+        else:
+            self._populate_magnetization_tree()
+        if self.viewing_spin_path is not None:
+            self.viewing_spin_path = None
+            self.mode_var.set("generation mode (spin-file view ended)")
+        self._schedule_live_update()
 
     def _readonly_text(self, parent: Any) -> Any:
         parent.columnconfigure(0, weight=1)
@@ -820,9 +1350,6 @@ class DesktopApp:
 
     def _install_traces(self) -> None:
         variables = (
-            self.species_var,
-            self.method_var,
-            self.moment_var,
             self.site_moment_file_var,
             self.site_comments_var,
             self.axis_var,
@@ -831,16 +1358,8 @@ class DesktopApp:
             self.auto_cutoff_var,
             self.cutoff_var,
             self.tolerance_var,
-            self.slab_var,
             self.q_vector_var,
             self.afm_type_var,
-            self.up_species_var,
-            self.down_species_var,
-            self.anion_species_var,
-            self.anion_cutoff_var,
-            self.up_coordination_var,
-            self.down_coordination_var,
-            self.coordination_tolerance_var,
             self.max_colors_var,
             self.color_spins_var,
             self.balance_colors_var,
@@ -850,6 +1369,85 @@ class DesktopApp:
         )
         for variable in variables:
             variable.trace_add("write", self._parameter_changed)
+        self.method_var.trace_add("write", self._method_changed)
+        self.slab_var.trace_add("write", self._structure_setting_changed)
+        for variable in (
+            self.anion_species_var,
+            self.anion_cutoff_var,
+            self.up_coordination_var,
+            self.down_coordination_var,
+            self.coordination_tolerance_var,
+        ):
+            variable.trace_add("write", self._coordination_setting_changed)
+
+    @staticmethod
+    def _split_words(text: str) -> tuple[str, ...]:
+        return tuple(value for value in text.replace(",", " ").split() if value)
+
+    def _method_changed(self, *_: object) -> None:
+        if not self._traces_ready:
+            return
+        if self._table_after_id is not None:
+            self.root.after_cancel(self._table_after_id)
+            self._table_after_id = None
+        self._show_method_options()
+        if self.current_structure is not None:
+            self._refresh_magnetization_table()
+        self._parameter_changed()
+
+    def _coordination_setting_changed(self, *_: object) -> None:
+        if not self._traces_ready:
+            return
+        if self.method_var.get() != "by-coordination" or self.current_structure is None:
+            self._parameter_changed()
+            return
+        if self.viewing_spin_path is not None:
+            self.viewing_spin_path = None
+            self.mode_var.set("generation mode (spin-file view ended)")
+        if self._live_after_id is not None:
+            self.root.after_cancel(self._live_after_id)
+            self._live_after_id = None
+        if self._table_after_id is not None:
+            self.root.after_cancel(self._table_after_id)
+        self._table_after_id = self.root.after(300, self._run_table_refresh)
+        self.status_var.set("Coordination table refresh scheduled...")
+
+    def _structure_setting_changed(self, *_: object) -> None:
+        if not self._traces_ready or self.structure_path is None:
+            return
+        try:
+            self.current_structure = read_structure(
+                self.structure_path, slab=self.slab_var.get()
+            )
+            self._refresh_magnetization_table()
+        except Exception as exc:
+            self.status_var.set(f"Structure refresh failed: {exc}")
+            return
+        self._parameter_changed()
+
+    def _run_table_refresh(self) -> None:
+        self._table_after_id = None
+        self._refresh_magnetization_table()
+        self._schedule_live_update()
+
+    def _refresh_magnetization_table(self) -> None:
+        if self.current_structure is None:
+            self._coordination_fallback = None
+            self.magnetization_rows = []
+            self._populate_magnetization_tree()
+            return
+        method = self.method_var.get()
+        rows, self._coordination_fallback = safe_magnetization_rows_from_structure(
+            self.current_structure,
+            method,
+            existing_rows=self.magnetization_rows,
+            anion_species=self._split_words(self.anion_species_var.get()) or None,
+            anion_cutoff=self.anion_cutoff_var.get().strip() or "auto",
+        )
+        if self._coordination_fallback:
+            self.status_var.set(self._coordination_fallback)
+        self.magnetization_rows = rows
+        self._populate_magnetization_tree()
 
     def _choose_structure(self, *, schedule: bool = True) -> bool:
         path = self.deps.filedialog.askopenfilename(
@@ -862,17 +1460,25 @@ class DesktopApp:
         )
         if not path:
             return False
-        self.structure_path = Path(path)
+        candidate = Path(path)
+        try:
+            structure = read_structure(candidate, slab=self.slab_var.get())
+        except Exception as exc:
+            self.status_var.set(f"Structure not loaded: {exc}")
+            self.deps.messagebox.showerror("Open structure failed", str(exc))
+            return False
+        self.structure_path = candidate
+        self.current_structure = structure
         self.file_var.set(str(self.structure_path))
         self.viewing_spin_path = None
         self.mode_var.set("generation mode")
         self._reset_camera = True
-        self.detected_coordination_var.set(
-            "detected: click Suggest for by-coordination sites"
-            if self.method_var.get() == "by-coordination"
-            else "detected: -"
+        self.magnetization_rows = []
+        self._refresh_magnetization_table()
+        self.status_var.set(
+            self._coordination_fallback
+            or f"Loaded structure: {self.structure_path.name}"
         )
-        self.status_var.set(f"Loaded structure: {self.structure_path.name}")
         if schedule:
             self._schedule_live_update()
         return True
@@ -885,62 +1491,22 @@ class DesktopApp:
         if path:
             self.site_moment_file_var.set(path)
 
-    def _suggest_coordination_moments(self) -> None:
-        if self.structure_path is None:
-            self.status_var.set("Select a structure before detecting coordination sites.")
-            return
-        if self.method_var.get() != "by-coordination":
-            self.status_var.set("Select the by-coordination method before using Suggest.")
-            return
-
-        def split_words(text: str) -> tuple[str, ...]:
-            return tuple(
-                value for value in text.replace(",", " ").split() if value
-            )
-
-        original_moment = self.moment_var.get()
-        try:
-            structure = read_structure(
-                self.structure_path, slab=self.slab_var.get()
-            )
-            counts = detect_coordination_combinations(
-                structure,
-                split_words(self.species_var.get()),
-                anion_species=split_words(self.anion_species_var.get()) or None,
-                anion_cutoff=self.anion_cutoff_var.get().strip() or "auto",
-                up_coordination=tuple(
-                    int(value)
-                    for value in split_words(self.up_coordination_var.get())
-                ),
-                down_coordination=tuple(
-                    int(value)
-                    for value in split_words(self.down_coordination_var.get())
-                ),
-                coordination_tolerance=int(self.coordination_tolerance_var.get()),
-            )
-        except Exception as exc:
-            self.detected_coordination_var.set("detected: unavailable")
-            self.status_var.set(f"Coordination suggestion unavailable: {exc}")
-            return
-
-        detected = format_detected_coordination(counts)
-        self.detected_coordination_var.set(detected)
-        suggestion = suggested_coordination_moment_text(original_moment, counts)
-        if suggestion is None:
-            self.status_var.set(
-                "Coordination sites detected; existing moment text was preserved."
-            )
-            return
-        self.moment_var.set(suggestion)
-        self.status_var.set("Filled a site-specific moment template; review each value.")
-
     def _collect_params(self) -> GenerationParams:
         if self.structure_path is None:
             raise ValueError("select a structure file first")
-        species = tuple(
-            value for value in self.species_var.get().replace(",", " ").split() if value
-        )
+        species = magnetic_species_from_rows(self.magnetization_rows)
+        if not species:
+            raise ValueError("select at least one magnetic element in the table")
         method = self.method_var.get()
+        moment = moment_text_from_rows(self.magnetization_rows, method)
+        up_species, down_species = species_roles_from_rows(self.magnetization_rows)
+        coordination_labels = tuple(
+            (row.element, row.coordination, row.label)
+            for row in self.magnetization_rows
+            if row.use
+            and row.coordination is not None
+            and row.label not in {"", "-"}
+        )
         layer_direction: tuple[float, float, float] | None = None
         direction_text = self.layer_direction_var.get().strip()
         if method == "layer" and direction_text:
@@ -967,16 +1533,14 @@ class DesktopApp:
         selected_afm_type = (
             afm_type if method == "propagation-vector" and afm_type != "custom" else None
         )
-        def split_words(text: str) -> tuple[str, ...]:
-            return tuple(
-                value for value in text.replace(",", " ").split() if value
-            )
         if method == "by-coordination":
             up_coordination = tuple(
-                int(value) for value in split_words(self.up_coordination_var.get())
+                int(value)
+                for value in self._split_words(self.up_coordination_var.get())
             )
             down_coordination = tuple(
-                int(value) for value in split_words(self.down_coordination_var.get())
+                int(value)
+                for value in self._split_words(self.down_coordination_var.get())
             )
             coordination_tolerance = int(self.coordination_tolerance_var.get())
         else:
@@ -999,7 +1563,7 @@ class DesktopApp:
             structure_path=self.structure_path,
             magnetic_species=species,
             method=method,
-            moment=self.moment_var.get().strip() or None,
+            moment=moment,
             site_moment_file=self.site_moment_file_var.get().strip() or None,
             site_comments=self.site_comments_var.get(),
             axis=self.axis_var.get(),
@@ -1011,13 +1575,14 @@ class DesktopApp:
             q_vector=q_vector,
             afm_type=selected_afm_type,
             allow_frustrated=self.allow_frustrated_var.get(),
-            up_species=split_words(self.up_species_var.get()),
-            down_species=split_words(self.down_species_var.get()),
-            anion_species=split_words(self.anion_species_var.get()),
+            up_species=up_species,
+            down_species=down_species,
+            anion_species=self._split_words(self.anion_species_var.get()),
             anion_cutoff=self.anion_cutoff_var.get().strip() or "auto",
             up_coordination=up_coordination,
             down_coordination=down_coordination,
             coordination_tolerance=coordination_tolerance,
+            coordination_labels=coordination_labels,
             max_colors=max_colors,
             color_spins=color_spins,
             balance_colors=balance_colors,
@@ -1057,7 +1622,10 @@ class DesktopApp:
         if self._live_after_id is not None:
             self.root.after_cancel(self._live_after_id)
         self._live_after_id = self.root.after(400, self._run_live_update)
-        self.status_var.set("Preview update scheduled...")
+        status = "Preview update scheduled..."
+        if self._coordination_fallback:
+            status = f"{self._coordination_fallback} Preview update scheduled..."
+        self.status_var.set(status)
 
     def _run_live_update(self) -> None:
         self._live_after_id = None
@@ -1104,20 +1672,6 @@ class DesktopApp:
         self._set_text(self.analysis_text, analysis)
         self._set_text(self.spin_text, result.block)
         self._set_site_table(result)
-        if result.assignment.method == "by-coordination":
-            coordinations = result.assignment.metadata.get("coordination_numbers", {})
-            if isinstance(coordinations, dict):
-                counts = _coordination_combination_counts(
-                    result.structure,
-                    result.magnetic_indices,
-                    coordinations,
-                    params.magnetic_species,
-                )
-            else:
-                counts = {}
-            self.detected_coordination_var.set(format_detected_coordination(counts))
-        else:
-            self.detected_coordination_var.set("detected: -")
         self._replace_figure(figure)
         self._set_exports_enabled(True)
         status = f"Generated {len(result.spins)} magnetic site(s)."
@@ -1332,6 +1886,9 @@ class DesktopApp:
         if self._live_after_id is not None:
             self.root.after_cancel(self._live_after_id)
             self._live_after_id = None
+        if self._table_after_id is not None:
+            self.root.after_cancel(self._table_after_id)
+            self._table_after_id = None
         if self.figure is not None:
             self.figure.clear()
         self.root.destroy()

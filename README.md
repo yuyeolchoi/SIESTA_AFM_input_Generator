@@ -225,19 +225,32 @@ python -m siesta_afm.gui
 siesta-afm-gui
 ```
 
-The GUI provides structure-file selection; magnetic element / method / moment / cutoff / layer settings; species and coordination sublattices; the A/C/G presets and an arbitrary layer direction; a rotatable and zoomable 3D preview; and graph analysis with a DM.InitSpin preview. Parameter changes are applied automatically with a 400 ms debounce, and `Live update` can be turned off. Existing spin files can also be opened on top of the current structure.
+Opening a CIF, FDF, XYZ, POSCAR/CONTCAR, or XV file immediately lists every element in
+the magnetization table. Elements covered by the built-in moment table are checked by
+default; anions and unsupported elements remain unchecked. The table is the source of
+truth for `use | element | label | CN | value (μB) | count | role`: double-click a use
+cell to toggle an element, or double-click label, value, and the `by-species` role to
+edit them. Element, CN, and count are read-only. The equivalent
+`--magnetic-species ... --moment ...` CLI options are shown immediately below the
+table for reuse in scripts. A site-moment CSV remains available for atom-specific
+overrides and has the same priority as the CLI: site CSV > table (`Element@CN` or
+`Element`) value.
 
-For `by-coordination`, `Suggest` detects the actual `Element@CN` combinations and
-replaces an empty moment with an editable template populated from the built-in
-element defaults, or reuses an entered single global moment.
-The detected combinations and atom counts remain visible below the field. `Site
-moment file` accepts the same CSV as CLI `--site-moment-file` and keeps the priority
-site CSV > `Element@CN` > `Element` > global.
+With `by-coordination`, the GUI creates one row per `(Element, CN)` group and derives
+the displayed geometry from ligand vectors, not from CN alone. It distinguishes, for
+example, square-planar Cu(CN=4) in CuO from tetrahedral Co(CN=4) in a spinel by
+counting ligand pairs with angles of at least 170°. Geometry labels are editable
+estimates; moment syntax remains `Element@CN`. An edited label is also written to the
+corresponding `DM.InitSpin` comments. If coordination analysis fails, the GUI keeps
+usable element-level rows and reports the reason instead of clearing the table.
 
-The moment field starts blank (`blank = built-in defaults`). The
-`Include element/CN comments in DM.InitSpin` checkbox controls the same output feature
-as CLI `--no-site-comments`. Default-moment and spin-state warnings appear in both the
-status bar and `Analysis` tab.
+Only settings relevant to the selected method are displayed. The input and result
+areas are separated by a draggable pane, and short labels plus help text keep input
+widgets readable at the default window size. Parameter changes still use the 400 ms
+live-preview debounce. `Include element/CN comments in DM.InitSpin` controls the same
+output feature as CLI `--no-site-comments`; default-moment and spin-state warnings
+appear in both the status bar and `Analysis` tab. Existing spin files can also be
+opened on top of the current structure.
 
 After generation, the `Sites` tab lists every magnetic atom in input order with its
 element, CN, sublattice, sign, and moment. Its footer shows `n_up`, `n_down`,

@@ -196,21 +196,147 @@ def test_detect_coordination_combinations_for_spinel_examples() -> None:
     }
 
 
-def test_coordination_template_uses_builtins_or_existing_global_magnitude() -> None:
-    counts = {("Ni", 6): 2, ("Co", 4): 2, ("Co", 6): 2}
-    assert gui.coordination_moment_template(counts, 0.5) == (
-        "Ni@6=0.5 Co@4=0.5 Co@6=0.5"
+def test_moment_text_is_derived_from_table_rows() -> None:
+    rows = [
+        gui.MagnetizationRow(True, "Ni", "Oh", 6, "2.0", 8),
+        gui.MagnetizationRow(True, "Co", "Td", 4, "2.0", 8),
+        gui.MagnetizationRow(True, "Co", "Oh", 6, "0.0", 16),
+        gui.MagnetizationRow(False, "O", "", None, "", 32),
+    ]
+    assert gui.moment_text_from_rows(rows, "by-coordination") == (
+        "Ni@6=2.0 Co@4=2.0 Co@6=0.0"
     )
-    assert "Ni@6 (2 atoms)" in gui.format_detected_coordination(counts)
-    assert gui.suggested_coordination_moment_text("", counts) == (
-        "Ni@6=2 Co@4=3 Co@6=3"
+    assert gui.moment_text_from_rows(rows, "layer") == "Ni=2.0 Co=2.0"
+    for row in rows:
+        row.value = ""
+    assert gui.moment_text_from_rows(rows, "by-coordination") is None
+
+
+def test_structure_rows_list_elements_defaults_and_method_grouping() -> None:
+    structure = read_structure(
+        ROOT / "tests" / "fixtures" / "inverse_spinel_coordination.cif",
+        slab=True,
     )
-    assert gui.suggested_coordination_moment_text("0.5", counts) == (
-        "Ni@6=0.5 Co@4=0.5 Co@6=0.5"
+    layer_rows = gui.magnetization_rows_from_structure(structure, "layer")
+    assert [(row.element, row.count, row.use) for row in layer_rows] == [
+        ("Ni", 2, True),
+        ("Co", 4, True),
+        ("O", 8, False),
+    ]
+    assert all(
+        row.label == "-" and row.coordination is None
+        for row in layer_rows
+        if row.use
     )
-    assert gui.suggested_coordination_moment_text("Co=2", counts) is None
-    assert gui.suggested_coordination_moment_text("Co@4=2 Co@6=0", counts) is None
-    assert gui.suggested_coordination_moment_text("not-a-moment", counts) is None
+    oxygen = next(row for row in layer_rows if row.element == "O")
+    assert (oxygen.label, oxygen.coordination, oxygen.value) == ("", None, "")
+
+    species_rows = gui.magnetization_rows_from_structure(
+        structure, "by-species", existing_rows=layer_rows
+    )
+    assert gui.species_roles_from_rows(species_rows) == (("Ni",), ("Co",))
+
+    coordination_rows = gui.magnetization_rows_from_structure(
+        structure,
+        "by-coordination",
+        existing_rows=layer_rows,
+        anion_species=("O",),
+    )
+    selected = [row for row in coordination_rows if row.use]
+    assert [
+        (row.element, row.label, row.coordination, row.count) for row in selected
+    ] == [
+        ("Ni", "Oh", 6, 2),
+        ("Co", "Td", 4, 2),
+        ("Co", "Oh", 6, 2),
+    ]
+    assert gui.equivalent_cli_options(coordination_rows, "by-coordination") == (
+        "--magnetic-species Ni Co --moment Ni@6=2.0 Co@4=3.0 Co@6=3.0"
+    )
+
+
+def test_coordination_table_failure_falls_back_to_element_rows() -> None:
+    structure = Structure(["Cu"], [[0, 0, 0]])
+    rows, warning = gui.safe_magnetization_rows_from_structure(
+        structure, "by-coordination"
+    )
+    assert [(row.element, row.label, row.coordination) for row in rows] == [
+        ("Cu", "-", None)
+    ]
+    assert warning is not None
+    assert "could not auto-detect an anion species" in warning
+
+
+def test_coordination_geometry_reaches_generated_comments_and_can_be_edited() -> None:
+    path = ROOT / "examples" / "CuO_bulk.cif"
+    generated = gui.run_generation(
+        gui.GenerationParams(
+            structure_path=path,
+            magnetic_species=("Cu",),
+            method="by-coordination",
+        )
+    )
+    assert "square-planar, CN=4" in generated.block
+    assert "Td, CN=4" not in generated.block
+
+    edited = gui.run_generation(
+        gui.GenerationParams(
+            structure_path=path,
+            magnetic_species=("Cu",),
+            method="by-coordination",
+            coordination_labels=(("Cu", 4, "user-label"),),
+        )
+    )
+    assert "user-label, CN=4" in edited.block
+
+    spinel = gui.run_generation(
+        gui.GenerationParams(
+            structure_path=ROOT / "examples" / "Co3O4_spinel_COD1538531.cif",
+            magnetic_species=("Co",),
+            method="by-coordination",
+        )
+    )
+    assert spinel.block.count("# Co  (Td, CN=4)") == 8
+    assert spinel.block.count("# Co  (Oh, CN=6)") == 16
+
+
+def test_default_gui_layout_keeps_visible_inputs_wide_enough() -> None:
+    dependencies = gui._load_gui_dependencies()
+    try:
+        root = dependencies.tk.Tk()
+    except dependencies.tk.TclError:
+        pytest.skip("Tk display is unavailable")
+    try:
+        try:
+            root.attributes("-alpha", 0.0)
+        except dependencies.tk.TclError:
+            pass
+        app = gui.DesktopApp(root, dependencies)
+        root.update()
+        visible_inputs = [widget for widget in app.control_inputs if widget.winfo_ismapped()]
+        assert visible_inputs
+        assert min(widget.winfo_width() for widget in visible_inputs) >= 120
+        assert app.main_pane.sashpos(0) >= gui._LEFT_PANEL_MIN_WIDTH
+        assert app.method_option_frames["layer"].winfo_ismapped()
+        assert not app.method_option_frames["by-coordination"].winfo_ismapped()
+        app.structure_path = (
+            ROOT / "tests" / "fixtures" / "inverse_spinel_coordination.cif"
+        )
+        app.current_structure = read_structure(app.structure_path, slab=True)
+        app.magnetization_rows = gui.magnetization_rows_from_structure(
+            app.current_structure, "layer"
+        )
+        app.method_var.set("by-coordination")
+        root.update()
+        assert app.method_option_frames["by-coordination"].winfo_ismapped()
+        assert not app.method_option_frames["layer"].winfo_ismapped()
+        assert [
+            (row.element, row.coordination)
+            for row in app.magnetization_rows
+            if row.use
+        ] == [("Ni", 6), ("Co", 4), ("Co", 6)]
+    finally:
+        root.destroy()
 
 
 def test_gui_controller_passes_site_moment_csv(tmp_path: Path) -> None:

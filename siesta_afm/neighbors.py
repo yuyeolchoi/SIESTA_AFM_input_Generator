@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import product
+from math import cos, radians
 from typing import Sequence
 
 import networkx as nx
@@ -18,6 +19,45 @@ class PairDistance:
     j: int
     distance: float
     vector: np.ndarray
+
+
+def classify_coordination_geometry(
+    vectors: Sequence[Sequence[float] | np.ndarray],
+    *,
+    trans_angle: float = 170.0,
+) -> str:
+    """Classify a ligand environment from its coordination vectors.
+
+    The deliberately conservative classifier only assigns a familiar geometry
+    when both the coordination number and number of near-linear ligand pairs
+    match a supported pattern.  It otherwise returns ``CN=<n>``.
+    """
+
+    array = np.asarray(vectors, dtype=float)
+    if array.size == 0:
+        return "CN=0"
+    array = np.reshape(array, (-1, 3))
+    coordination = len(array)
+    norms = np.linalg.norm(array, axis=1)
+    if np.any(norms <= 1e-12):
+        return f"CN={coordination}"
+    unit = array / norms[:, None]
+    trans_limit = cos(radians(trans_angle))
+    trans_pairs = sum(
+        float(np.dot(unit[left], unit[right])) <= trans_limit + 1e-12
+        for left in range(coordination)
+        for right in range(left + 1, coordination)
+    )
+    labels = {
+        (2, 1): "linear",
+        (3, 0): "trigonal",
+        (4, 0): "Td",
+        (4, 2): "square-planar",
+        (5, 1): "trigonal-bipyramidal",
+        (5, 0): "square-pyramidal",
+        (6, 3): "Oh",
+    }
+    return labels.get((coordination, trans_pairs), f"CN={coordination}")
 
 
 def minimum_image_vector(structure: Structure, i: int, j: int) -> np.ndarray:

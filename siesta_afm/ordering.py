@@ -14,6 +14,7 @@ import numpy as np
 from .neighbors import (
     PairDistance,
     build_neighbor_graph,
+    classify_coordination_geometry,
     cross_pair_distances,
     distance_shells,
     magnetic_pair_distances,
@@ -77,6 +78,17 @@ class SpinAssignment:
     @property
     def n_down(self) -> int:
         return sum(sign < 0 for sign in self.signs.values())
+
+
+@dataclass(slots=True)
+class CoordinationAnalysis:
+    """Per-site ligand data shared by ordering and GUI presentation."""
+
+    anion_species: list[str]
+    cutoff: float
+    site_cutoffs: dict[int, float]
+    coordination_numbers: dict[int, int]
+    ligand_vectors: dict[int, tuple[np.ndarray, ...]]
 
 
 def alternating_index(indices: Sequence[int]) -> SpinAssignment:
@@ -186,6 +198,80 @@ def _resolve_anion_species(
     return detected
 
 
+def analyze_coordination_sites(
+    structure: Structure,
+    indices: Sequence[int],
+    *,
+    anion_species: Sequence[str] | None = None,
+    anion_cutoff: str | float | None = "auto",
+) -> CoordinationAnalysis:
+    """Resolve first-shell anions and retain the vectors used to count them."""
+
+    anions = _resolve_anion_species(structure, anion_species)
+    wanted = {item.lower() for item in anions}
+    anion_indices = [
+        index for index, symbol in enumerate(structure.symbols) if symbol.lower() in wanted
+    ]
+    if not anion_indices:
+        raise ValueError(f"no atoms matched anion species: {', '.join(anions)}")
+    overlap = sorted(set(indices) & set(anion_indices))
+    if overlap:
+        raise ValueError(
+            f"anion species overlaps magnetic atom {overlap[0] + 1}; choose distinct "
+            "magnetic and anion species"
+        )
+
+    site_cutoffs: dict[int, float] = {}
+    automatic = anion_cutoff is None or str(anion_cutoff).lower() == "auto"
+    if automatic:
+        pairs = cross_pair_distances(
+            structure, indices, anion_indices, all_images=True
+        )
+        if not pairs:
+            raise ValueError("no finite magnetic-anion distances were found")
+        # Distorted spinels commonly have different Td-O and Oh-O bond
+        # lengths. Resolve the first shell per magnetic site.
+        for index in indices:
+            site_pairs = [pair for pair in pairs if pair.i == index]
+            shells = distance_shells(site_pairs)
+            if not shells:
+                raise ValueError(
+                    f"no finite anion distances were found for atom {index + 1}"
+                )
+            first_upper = max(pair.distance for pair in shells[0][1])
+            site_cutoffs[index] = (
+                (first_upper + min(pair.distance for pair in shells[1][1])) / 2.0
+                if len(shells) > 1
+                else first_upper * 1.05 + 1e-6
+            )
+        resolved = max(site_cutoffs.values())
+    else:
+        resolved = float(anion_cutoff)
+        if resolved <= 0:
+            raise ValueError("anion cutoff must be positive")
+        site_cutoffs = {index: resolved for index in indices}
+    vectors = {
+        index: tuple(
+            pair.vector
+            for pair in cross_pair_distances(
+                structure,
+                [index],
+                anion_indices,
+                all_images=True,
+                cutoff=site_cutoffs[index],
+            )
+        )
+        for index in indices
+    }
+    return CoordinationAnalysis(
+        anion_species=anions,
+        cutoff=resolved,
+        site_cutoffs=site_cutoffs,
+        coordination_numbers={index: len(vectors[index]) for index in indices},
+        ligand_vectors=vectors,
+    )
+
+
 def coordination_ordering(
     structure: Structure,
     indices: Sequence[int],
@@ -204,59 +290,17 @@ def coordination_ordering(
     down_values = {int(value) for value in down_coordination}
     if not up_values or not down_values or min(up_values | down_values) < 0:
         raise ValueError("up/down coordination lists must contain nonnegative integers")
-    anions = _resolve_anion_species(structure, anion_species)
-    wanted = {item.lower() for item in anions}
-    anion_indices = [
-        index for index, symbol in enumerate(structure.symbols) if symbol.lower() in wanted
-    ]
-    if not anion_indices:
-        raise ValueError(
-            f"no atoms matched anion species: {', '.join(anions)}"
-        )
-    overlap = sorted(set(indices) & set(anion_indices))
-    if overlap:
-        raise ValueError(
-            f"anion species overlaps magnetic atom {overlap[0] + 1}; choose distinct "
-            "magnetic and anion species"
-        )
-    site_cutoffs: dict[int, float] = {}
-    automatic = anion_cutoff is None or str(anion_cutoff).lower() == "auto"
-    if automatic:
-        pairs = cross_pair_distances(
-            structure, indices, anion_indices, all_images=True
-        )
-        if not pairs:
-            raise ValueError("no finite magnetic-anion distances were found")
-        # Distorted spinels commonly have different Td-O and Oh-O bond
-        # lengths.  Resolve the first shell per magnetic site so the shorter
-        # sublattice's second shell is not mistaken for a bond while the
-        # longer sublattice is being included.
-        for index in indices:
-            site_pairs = [pair for pair in pairs if pair.i == index]
-            shells = distance_shells(site_pairs)
-            first_upper = max(pair.distance for pair in shells[0][1])
-            site_cutoffs[index] = (
-                (first_upper + min(pair.distance for pair in shells[1][1])) / 2.0
-                if len(shells) > 1
-                else first_upper * 1.05 + 1e-6
-            )
-        resolved = max(site_cutoffs.values())
-    else:
-        resolved = float(anion_cutoff)
-        if resolved <= 0:
-            raise ValueError("anion cutoff must be positive")
-        site_cutoffs = {index: resolved for index in indices}
-        pairs = cross_pair_distances(
-            structure,
-            indices,
-            anion_indices,
-            all_images=True,
-            cutoff=resolved,
-        )
-    coordinations = {index: 0 for index in indices}
-    for pair in pairs:
-        if pair.distance <= site_cutoffs[pair.i] + 1e-9:
-            coordinations[pair.i] += 1
+    analysis = analyze_coordination_sites(
+        structure,
+        indices,
+        anion_species=anion_species,
+        anion_cutoff=anion_cutoff,
+    )
+    coordinations = analysis.coordination_numbers
+    geometries = {
+        index: classify_coordination_geometry(analysis.ligand_vectors[index])
+        for index in indices
+    }
 
     signs: dict[int, int] = {}
     sublattices: dict[int, str] = {}
@@ -299,10 +343,11 @@ def coordination_ordering(
         signs,
         "by-coordination",
         {
-            "anion_species": anions,
-            "anion_cutoff": resolved,
-            "anion_cutoffs": site_cutoffs,
+            "anion_species": analysis.anion_species,
+            "anion_cutoff": analysis.cutoff,
+            "anion_cutoffs": analysis.site_cutoffs,
             "coordination_numbers": coordinations,
+            "coordination_geometry": geometries,
             "sublattice_classification": sublattices,
             "up_coordination": sorted(up_values),
             "down_coordination": sorted(down_values),
