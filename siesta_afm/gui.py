@@ -70,6 +70,8 @@ _RESULT_COLUMNS = (
 _NEAR_GROUND_ENERGY_WINDOW_EV = 0.01
 _COLOR_MODES = {"spin sign": "sign", "spin value": "value"}
 _LEFT_PANEL_MIN_WIDTH = 600
+_RESULTS_NOTEBOOK_MIN_HEIGHT = 250
+_PANE_SASH_MARGIN = 8
 _AUTO_SHOW_INDICES_MAX_ATOMS = 60
 
 
@@ -1009,6 +1011,9 @@ class DesktopApp:
         self._coordination_fallback: str | None = None
         self._coordination_use_note: str | None = None
         self._pane_width_initialized = False
+        self._results_pane_height_initialized = False
+        self._active_scroll_canvas: Any | None = None
+        self._mousewheel_leave_after_id: str | None = None
 
         root.title("SIESTA AFM initial-spin generator")
         root.geometry("1450x900")
@@ -1025,6 +1030,7 @@ class DesktopApp:
         self._sync_cutoff_state()
         self._show_method_options()
         self._set_initial_pane_width()
+        self._set_initial_results_pane_height()
 
     def _create_variables(self) -> None:
         tk = self.tk
@@ -1080,35 +1086,9 @@ class DesktopApp:
         )
         container = ttk.Frame(self.main_pane)
         self.main_pane.add(container, weight=0)
-        container.columnconfigure(0, weight=1)
-        container.rowconfigure(0, weight=1)
-        self.controls_canvas = self.tk.Canvas(container, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(
-            container, orient="vertical", command=self.controls_canvas.yview
+        self.controls_canvas, panel = self._make_scrollable_frame(
+            container, padding=10
         )
-        self.controls_canvas.configure(yscrollcommand=scrollbar.set)
-        self.controls_canvas.grid(row=0, column=0, sticky="nsew")
-        scrollbar.grid(row=0, column=1, sticky="ns")
-        panel = ttk.Frame(self.controls_canvas, padding=10)
-        panel_window = self.controls_canvas.create_window(
-            (0, 0), window=panel, anchor="nw"
-        )
-        panel.bind(
-            "<Configure>",
-            lambda _event: self.controls_canvas.configure(
-                scrollregion=self.controls_canvas.bbox("all")
-            ),
-        )
-        self.controls_canvas.bind(
-            "<Configure>",
-            lambda event: self.controls_canvas.itemconfigure(
-                panel_window, width=event.width
-            ),
-        )
-        self.controls_canvas.bind("<Enter>", self._bind_controls_mousewheel)
-        self.controls_canvas.bind("<Leave>", self._unbind_controls_mousewheel)
-        panel.bind("<Enter>", self._bind_controls_mousewheel)
-        panel.bind("<Leave>", self._unbind_controls_mousewheel)
         panel.columnconfigure(0, minsize=115, weight=0)
         panel.columnconfigure(1, minsize=160, weight=1)
 
@@ -1432,29 +1412,151 @@ class DesktopApp:
         ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
         self.export_buttons = [self.complete_input_action, *export_group_buttons]
 
-    def _bind_controls_mousewheel(self, _event: object | None = None) -> None:
-        self.controls_canvas.bind_all("<MouseWheel>", self._scroll_controls)
+        self._configure_canvas_mousewheel(
+            self.controls_canvas,
+            blocked=(self.magnetization_tree,),
+        )
 
-    def _unbind_controls_mousewheel(self, _event: object | None = None) -> None:
-        self.controls_canvas.unbind_all("<MouseWheel>")
+    def _make_scrollable_frame(
+        self,
+        parent: Any,
+        *,
+        padding: int | tuple[int, ...] = 0,
+    ) -> tuple[Any, Any]:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
+        canvas = self.tk.Canvas(parent, highlightthickness=0)
+        scrollbar = self.ttk.Scrollbar(
+            parent, orient="vertical", command=canvas.yview
+        )
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        content = self.ttk.Frame(canvas, padding=padding)
+        content_window = canvas.create_window((0, 0), window=content, anchor="nw")
+        content.bind(
+            "<Configure>",
+            lambda _event: canvas.configure(scrollregion=canvas.bbox("all")),
+        )
+        canvas.bind(
+            "<Configure>",
+            lambda event: canvas.itemconfigure(content_window, width=event.width),
+        )
+        return canvas, content
 
-    def _scroll_controls(self, event: Any) -> str:
+    def _configure_canvas_mousewheel(
+        self,
+        canvas: Any,
+        *,
+        blocked: Sequence[Any] = (),
+    ) -> None:
+        blocked_widgets = set(blocked)
+
+        def bind_widget(widget: Any) -> None:
+            if widget in blocked_widgets:
+                widget.bind(
+                    "<Enter>",
+                    lambda _event, target=canvas: self._suspend_canvas_mousewheel(
+                        target
+                    ),
+                    add="+",
+                )
+                return
+            widget.bind(
+                "<Enter>",
+                lambda _event, target=canvas: self._activate_canvas_mousewheel(
+                    target
+                ),
+                add="+",
+            )
+            widget.bind(
+                "<Leave>",
+                lambda _event, target=canvas: self._schedule_canvas_mousewheel_unbind(
+                    target
+                ),
+                add="+",
+            )
+            for child in widget.winfo_children():
+                bind_widget(child)
+
+        bind_widget(canvas)
+
+    def _cancel_mousewheel_leave(self) -> None:
+        if self._mousewheel_leave_after_id is None:
+            return
+        try:
+            self.root.after_cancel(self._mousewheel_leave_after_id)
+        except self.tk.TclError:
+            pass
+        self._mousewheel_leave_after_id = None
+
+    def _activate_canvas_mousewheel(self, canvas: Any) -> None:
+        self._cancel_mousewheel_leave()
+        self._active_scroll_canvas = canvas
+        canvas.bind_all("<MouseWheel>", self._scroll_active_canvas)
+
+    def _schedule_canvas_mousewheel_unbind(self, canvas: Any) -> None:
+        if self._active_scroll_canvas is not canvas:
+            return
+        self._cancel_mousewheel_leave()
+        self._mousewheel_leave_after_id = self.root.after_idle(
+            lambda target=canvas: self._deactivate_canvas_mousewheel(target)
+        )
+
+    def _deactivate_canvas_mousewheel(self, canvas: Any | None = None) -> None:
+        self._cancel_mousewheel_leave()
+        if canvas is not None and self._active_scroll_canvas is not canvas:
+            return
+        if self._active_scroll_canvas is not None:
+            self._active_scroll_canvas.unbind_all("<MouseWheel>")
+        self._active_scroll_canvas = None
+
+    def _suspend_canvas_mousewheel(self, canvas: Any) -> None:
+        if self._active_scroll_canvas is canvas:
+            self._deactivate_canvas_mousewheel(canvas)
+
+    def _scroll_active_canvas(self, event: Any) -> str | None:
+        if self._active_scroll_canvas is None:
+            return None
+        return self._scroll_canvas(self._active_scroll_canvas, event)
+
+    @staticmethod
+    def _scroll_canvas(canvas: Any, event: Any) -> str:
         steps = int(-1 * (event.delta / 120))
         if steps:
-            self.controls_canvas.yview_scroll(steps, "units")
+            canvas.yview_scroll(steps, "units")
         return "break"
+
+    def _bind_controls_mousewheel(self, _event: object | None = None) -> None:
+        self._activate_canvas_mousewheel(self.controls_canvas)
+
+    def _unbind_controls_mousewheel(self, _event: object | None = None) -> None:
+        self._deactivate_canvas_mousewheel()
+
+    def _scroll_controls(self, event: Any) -> str:
+        return self._scroll_canvas(self.controls_canvas, event)
 
     def _build_results(self) -> None:
         ttk = self.ttk
         panel = ttk.Frame(self.main_pane, padding=(0, 10, 10, 10))
         self.main_pane.add(panel, weight=1)
         panel.columnconfigure(0, weight=1)
-        panel.rowconfigure(1, weight=3)
-        panel.rowconfigure(2, weight=2)
+        panel.rowconfigure(1, weight=1)
 
         ttk.Label(panel, textvariable=self.mode_var).grid(row=0, column=0, sticky="w")
-        preview = ttk.LabelFrame(panel, text="Interactive 3D preview", padding=4)
-        preview.grid(row=1, column=0, sticky="nsew", pady=(4, 6))
+        self.results_pane = ttk.PanedWindow(panel, orient="vertical")
+        self.results_pane.grid(row=1, column=0, sticky="nsew", pady=(4, 0))
+        self.results_pane.bind(
+            "<Map>",
+            lambda _event: self.root.after_idle(
+                self._set_initial_results_pane_height
+            ),
+        )
+
+        preview = ttk.LabelFrame(
+            self.results_pane, text="Interactive 3D preview", padding=4
+        )
+        self.results_pane.add(preview, weight=3)
         preview.columnconfigure(0, weight=1)
         preview.rowconfigure(1, weight=1)
         ttk.Checkbutton(
@@ -1468,8 +1570,8 @@ class DesktopApp:
         self.toolbar_host = ttk.Frame(preview)
         self.toolbar_host.grid(row=2, column=0, sticky="ew")
 
-        notebook = ttk.Notebook(panel)
-        notebook.grid(row=2, column=0, sticky="nsew")
+        notebook = ttk.Notebook(self.results_pane)
+        self.results_pane.add(notebook, weight=2)
         analysis_frame = ttk.Frame(notebook)
         sites_frame = ttk.Frame(notebook)
         spin_frame = ttk.Frame(notebook)
@@ -1545,9 +1647,9 @@ class DesktopApp:
         parent.rowconfigure(0, weight=1)
         notebook = ttk.Notebook(parent)
         notebook.grid(row=0, column=0, sticky="nsew")
-        candidates_tab = ttk.Frame(notebook, padding=6)
-        prepare_tab = ttk.Frame(notebook, padding=6)
-        results_tab = ttk.Frame(notebook, padding=6)
+        candidates_tab = ttk.Frame(notebook)
+        prepare_tab = ttk.Frame(notebook)
+        results_tab = ttk.Frame(notebook)
         notebook.add(candidates_tab, text="Candidates")
         notebook.add(prepare_tab, text="Prepare jobs")
         notebook.add(results_tab, text="Results")
@@ -1558,6 +1660,9 @@ class DesktopApp:
 
     def _build_candidates_tab(self, parent: Any) -> None:
         ttk = self.ttk
+        self.candidates_canvas, parent = self._make_scrollable_frame(
+            parent, padding=6
+        )
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(3, weight=1)
         self.batch_workflow_help_label = ttk.Label(
@@ -1673,9 +1778,14 @@ class DesktopApp:
         self.candidate_messages = self.tk.Text(parent, height=3, wrap="word")
         self.candidate_messages.grid(row=4, column=0, sticky="ew", pady=(3, 0))
         self.candidate_messages.configure(state="disabled")
+        self._configure_canvas_mousewheel(
+            self.candidates_canvas,
+            blocked=(self.candidate_tree,),
+        )
 
     def _build_prepare_tab(self, parent: Any) -> None:
         ttk = self.ttk
+        self.prepare_canvas, parent = self._make_scrollable_frame(parent, padding=6)
         parent.columnconfigure(1, weight=1)
         parent.rowconfigure(4, weight=1)
         ttk.Label(
@@ -1719,9 +1829,13 @@ class DesktopApp:
         )
         parent.rowconfigure(5, weight=1)
         self.job_folders_text.configure(state="disabled")
+        self._configure_canvas_mousewheel(self.prepare_canvas)
 
     def _build_collected_results_tab(self, parent: Any) -> None:
         ttk = self.ttk
+        self.collected_results_canvas, parent = self._make_scrollable_frame(
+            parent, padding=6
+        )
         parent.columnconfigure(1, weight=1)
         parent.rowconfigure(4, weight=1)
         self._batch_path_row(
@@ -1809,6 +1923,10 @@ class DesktopApp:
             wraplength=720,
             foreground="#555555",
         ).grid(row=5, column=0, columnspan=3, sticky="w", pady=(3, 0))
+        self._configure_canvas_mousewheel(
+            self.collected_results_canvas,
+            blocked=(self.collected_results_tree,),
+        )
 
     def _batch_path_row(
         self,
@@ -1883,6 +2001,37 @@ class DesktopApp:
     def _enforce_left_pane_width(self, _event: object | None = None) -> None:
         if len(self.main_pane.panes()) > 1 and self.main_pane.sashpos(0) < _LEFT_PANEL_MIN_WIDTH:
             self.main_pane.sashpos(0, _LEFT_PANEL_MIN_WIDTH)
+
+    def _set_initial_results_pane_height(self) -> None:
+        if self._results_pane_height_initialized:
+            return
+        self.root.update_idletasks()
+        if self.results_pane.winfo_height() > 1 and len(self.results_pane.panes()) > 1:
+            initial_height = int(self.results_pane.winfo_height() * 3 / 5)
+            self.results_pane.sashpos(
+                0, min(initial_height, self._maximum_preview_height())
+            )
+            self.results_pane.bind(
+                "<ButtonRelease-1>", self._enforce_results_notebook_height
+            )
+            self._results_pane_height_initialized = True
+
+    def _maximum_preview_height(self) -> int:
+        return max(
+            0,
+            self.results_pane.winfo_height()
+            - _RESULTS_NOTEBOOK_MIN_HEIGHT
+            - _PANE_SASH_MARGIN,
+        )
+
+    def _enforce_results_notebook_height(
+        self, _event: object | None = None
+    ) -> None:
+        if (
+            len(self.results_pane.panes()) > 1
+            and self.results_pane.sashpos(0) > self._maximum_preview_height()
+        ):
+            self.results_pane.sashpos(0, self._maximum_preview_height())
 
     def _show_method_options(self) -> None:
         for frame in self.method_option_frames.values():

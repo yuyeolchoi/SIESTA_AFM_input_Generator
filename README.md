@@ -350,6 +350,12 @@ are sorted by ascending `total_energy`; unconverged rows are gray, and converged
 states within 0.01 eV of the lowest energy are highlighted as a group. The GUI
 does not automatically choose one of several close candidates.
 
+Drag the horizontal divider between the 3D preview and the results notebook to
+give `Batch workflow` more vertical space. Each of its three subtabs also has a
+vertical scrollbar and supports the mouse wheel; when the pointer is over a
+candidate or results table, the wheel scrolls that table instead of the outer
+tab.
+
 ## Running the GUI
 
 First install the GUI optional dependencies.

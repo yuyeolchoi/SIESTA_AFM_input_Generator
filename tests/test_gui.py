@@ -481,6 +481,99 @@ def test_control_panel_mousewheel_scrolls_with_primary_actions_fixed() -> None:
         root.destroy()
 
 
+def test_results_panel_vertical_pane_resizes_notebook() -> None:
+    dependencies = gui._load_gui_dependencies()
+    try:
+        root = dependencies.tk.Tk()
+    except dependencies.tk.TclError:
+        pytest.skip("Tk display is unavailable")
+    try:
+        try:
+            root.attributes("-alpha", 0.0)
+        except dependencies.tk.TclError:
+            pass
+        app = gui.DesktopApp(root, dependencies)
+        root.geometry("1050x700")
+        root.update()
+
+        assert str(app.results_pane.cget("orient")) == "vertical"
+        assert len(app.results_pane.panes()) == 2
+        notebook_height_before = app.results_notebook.winfo_height()
+        sash_before = app.results_pane.sashpos(0)
+        app.results_pane.sashpos(0, max(0, sash_before - 80))
+        root.update()
+        assert app.results_notebook.winfo_height() > notebook_height_before
+
+        app.results_pane.sashpos(0, app.results_pane.winfo_height())
+        app._enforce_results_notebook_height()
+        root.update()
+        assert (
+            app.results_notebook.winfo_height()
+            >= gui._RESULTS_NOTEBOOK_MIN_HEIGHT
+        )
+    finally:
+        root.destroy()
+
+
+def test_batch_tabs_mousewheel_scroll_without_stealing_treeview_wheel() -> None:
+    dependencies = gui._load_gui_dependencies()
+    try:
+        root = dependencies.tk.Tk()
+    except dependencies.tk.TclError:
+        pytest.skip("Tk display is unavailable")
+    try:
+        try:
+            root.attributes("-alpha", 0.0)
+        except dependencies.tk.TclError:
+            pass
+        app = gui.DesktopApp(root, dependencies)
+        root.geometry("1050x700")
+        app.results_notebook.select(3)
+        root.update()
+        app.results_pane.sashpos(0, app._maximum_preview_height())
+        root.update()
+
+        for tab_index, canvas in enumerate(
+            (
+                app.candidates_canvas,
+                app.prepare_canvas,
+                app.collected_results_canvas,
+            )
+        ):
+            app.batch_notebook.select(tab_index)
+            root.update()
+            canvas.yview_moveto(0.0)
+            before = canvas.yview()
+            assert before[1] - before[0] < 1.0
+            canvas.event_generate("<Enter>")
+            canvas.event_generate("<MouseWheel>", delta=-120)
+            root.update()
+            assert canvas.yview()[0] > before[0]
+            canvas.event_generate("<Leave>")
+            root.update()
+
+        app.batch_notebook.select(0)
+        for index in range(20):
+            app.candidate_tree.insert(
+                "",
+                "end",
+                values=(f"{index:03d}", "layer", 1, 1, 0, 1, "candidate.fdf"),
+            )
+        app.candidates_canvas.yview_moveto(1.0)
+        app.candidate_tree.yview_moveto(0.0)
+        root.update()
+        outer_before = app.candidates_canvas.yview()
+        tree_before = app.candidate_tree.yview()
+        app.candidates_canvas.event_generate("<Enter>")
+        app.candidate_tree.event_generate("<Enter>")
+        app.candidate_tree.event_generate("<MouseWheel>", delta=-120)
+        root.update()
+        assert app.candidates_canvas.yview() == outer_before
+        assert app.candidate_tree.yview()[0] > tree_before[0]
+    finally:
+        root.destroy()
+
+
 def test_atom_index_default_tracks_each_new_structure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
