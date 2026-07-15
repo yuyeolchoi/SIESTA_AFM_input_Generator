@@ -10,3 +10,6 @@ dist/
 /afm_pattern.png
 /analysis.json
 
+
+# Internal Codex work instructions (kept local only)
+/CODEX_TASKS*.md
