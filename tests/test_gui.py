@@ -357,6 +357,26 @@ def test_gui_controller_passes_site_moment_csv(tmp_path: Path) -> None:
     assert result.spins[1] == 2.0
 
 
+def test_gui_complete_input_export_uses_shared_roundtrippable_renderer(
+    tmp_path: Path,
+) -> None:
+    generated = gui.run_generation(
+        gui.GenerationParams(
+            structure_path=ROOT / "examples" / "CuO_bulk.cif",
+            magnetic_species=("Cu",),
+            method="layer",
+            moment="0.5",
+        )
+    )
+    destination = gui.export_complete_input(generated, tmp_path / "input.fdf")
+    reread = read_structure(destination)
+    assert reread.symbols == generated.structure.symbols
+    assert np.allclose(reread.positions, generated.structure.positions)
+    assert parse_dm_init_spin(destination) == [
+        (index + 1, value) for index, value in sorted(generated.spins.items())
+    ]
+
+
 def test_generation_controller_rejects_unknown_species() -> None:
     with pytest.raises(ValueError, match="magnetic atoms|species"):
         gui.run_generation(

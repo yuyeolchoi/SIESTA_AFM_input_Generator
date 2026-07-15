@@ -1,13 +1,57 @@
 import csv
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from siesta_afm.cli import build_parser, main
-from siesta_afm.io import parse_dm_init_spin
+from siesta_afm.io import parse_dm_init_spin, read_structure
 
 
 ROOT = Path(__file__).parents[1]
+
+
+def test_make_input_cli_writes_roundtrippable_template_and_warning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output = tmp_path / "complete.fdf"
+    source = ROOT / "tests" / "fixtures" / "inverse_spinel_coordination.cif"
+    assert (
+        main(
+            [
+                "make-input",
+                str(source),
+                "--slab",
+                "--magnetic-species",
+                "Ni",
+                "Co",
+                "--method",
+                "by-coordination",
+                "--anion-species",
+                "O",
+                "--kgrid",
+                "4",
+                "5",
+                "1",
+                "--hubbard-u",
+                "Ni=6.0",
+                "Co=3.3",
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    original = read_structure(source, slab=True)
+    generated = read_structure(output)
+    assert generated.symbols == original.symbols
+    assert np.allclose(generated.positions, original.positions)
+    assert len(parse_dm_init_spin(output)) == 6
+    text = output.read_text(encoding="utf-8")
+    assert "# Selected k-grid 4 5 1: explicit --kgrid override." in text
+    stderr = capsys.readouterr().err
+    assert "using built-in default initial moments" in stderr
+    assert "starting template only" in stderr
 
 
 def test_generate_patch_in_place_rejects_different_output(

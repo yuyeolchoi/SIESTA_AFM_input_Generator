@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .fdf_writer import patch_fdf_text, render_dm_init_spin
+from .input_template import InputTemplateResult, render_complete_input
 from .io import parse_dm_init_spin, read_structure
 from .magnetic_sites import (
     DEFAULT_ELEMENT_MOMENTS,
@@ -639,6 +640,49 @@ def export_structure_with_moments(
     return plot_spin_pattern(structure, spins, destination)
 
 
+def complete_input_document(
+    result: GenerationResult | SpinFileResult,
+    **options: object,
+) -> InputTemplateResult:
+    """Build the same complete starting input used by the CLI."""
+
+    if isinstance(result, GenerationResult):
+        indices = result.magnetic_indices
+        method = result.assignment.method
+        metadata = result.assignment.metadata
+    else:
+        indices = sorted(index for index, value in result.spins.items() if value != 0)
+        method = "loaded-spin-file"
+        metadata = {}
+    magnetic_species: list[str] = []
+    for index in indices:
+        symbol = result.structure.symbols[index]
+        if symbol not in magnetic_species:
+            magnetic_species.append(symbol)
+    return render_complete_input(
+        result.structure,
+        result.spins,
+        method=method,
+        magnetic_species=magnetic_species,
+        metadata=metadata,
+        **options,
+    )
+
+
+def export_complete_input(
+    result: GenerationResult | SpinFileResult,
+    destination: str | Path,
+    **options: object,
+) -> Path:
+    """Write a complete SIESTA starting input through the shared renderer."""
+
+    document = complete_input_document(result, **options)
+    path = Path(destination)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(document.text, encoding="utf-8")
+    return path
+
+
 def _load_gui_dependencies() -> _GuiDependencies:
     """Import Tk and its matplotlib bridge only when the desktop UI is launched."""
 
@@ -687,7 +731,7 @@ class DesktopApp:
         self.current_structure: Structure | None = None
         self.current_spins: dict[int, float] = {}
         self.current_block = ""
-        self.current_result: GenerationResult | None = None
+        self.current_result: GenerationResult | SpinFileResult | None = None
         self.viewing_spin_path: Path | None = None
         self.figure: Any | None = None
         self.canvas: Any | None = None
@@ -1041,6 +1085,11 @@ class DesktopApp:
         exports.columnconfigure(0, weight=1)
         self.export_buttons = [
             ttk.Button(exports, text="DM.InitSpin block...", command=self._save_spin),
+            ttk.Button(
+                exports,
+                text="Complete SIESTA input...",
+                command=self._export_complete_input,
+            ),
             ttk.Button(
                 exports, text="Patched SIESTA input...", command=self._export_patched
             ),
@@ -1718,7 +1767,7 @@ class DesktopApp:
             return
 
         self._reset_camera = False
-        self.current_result = None
+        self.current_result = loaded
         self.current_structure = structure
         self.current_spins = loaded.spins
         self.current_block = loaded.block
@@ -1851,6 +1900,26 @@ class DesktopApp:
                 lambda: export_patched_input(base, self.current_block, destination),
                 "Exported patched SIESTA input",
             )
+
+    def _export_complete_input(self) -> None:
+        if self.current_result is None:
+            return
+        destination = self.deps.filedialog.asksaveasfilename(
+            title="Export complete SIESTA starting input",
+            defaultextension=".fdf",
+            initialfile="input.fdf",
+            filetypes=[("FDF files", "*.fdf"), ("All files", "*.*")],
+        )
+        if not destination:
+            return
+        document = complete_input_document(self.current_result)
+        self.deps.messagebox.showwarning(
+            "Complete input is a starting point", "\n\n".join(document.warnings)
+        )
+        self._run_export(
+            lambda: export_complete_input(self.current_result, destination),
+            "Exported complete SIESTA starting input",
+        )
 
     def _export_structure(self) -> None:
         if self.current_structure is None:

@@ -56,6 +56,48 @@ siesta-afm patch examples/input.fdf \
 
 Without `--in-place`, the original FDF is never overwritten. Adding `--backup` writes a `.bak` copy next to the original.
 
+## Complete SIESTA starting input
+
+`make-input` combines the order-preserving structure, the selected AFM method,
+`DM.InitSpin`, basis and pseudopotential requirements, PBE/SCF settings, a k-grid,
+and an optional DFT+U block in one FDF file. For example, an inverse-spinel
+starting point can be generated with:
+
+```bash
+siesta-afm make-input inverse_spinel.cif \
+  --magnetic-species Ni Co \
+  --method by-coordination \
+  --anion-species O \
+  --moment Ni@6=2.0 Co@4=2.0 Co@6=0.0 \
+  --hubbard-u Ni=6.0 Co=3.3 \
+  --output input.fdf
+```
+
+The coordinate rows and `DM.InitSpin` indices retain exactly the input atom
+order. Existing FDF/XV species IDs are retained; other formats receive species
+IDs in first-appearance order. The automatic k-grid is
+`ceil(30 Ang / |a_i|)` on each periodic axis and 1 on each nonperiodic axis.
+Use `--kgrid N1 N2 N3` or `--kgrid-cutoff K` to change it, and
+`--basis-size SZ|SZP|DZ|DZP|TZP` to select the starting basis.
+
+By default, supported selected magnetic elements receive the Materials Project
+oxide-calibrated effective U values in the SIESTA `LDAU.proj` syntax. Override
+them with `--hubbard-u Element=value`, disable the block with `--no-lda-u`, or
+select the current `DFTU.Proj` spelling with `--dftu-keyword dftu`. SIESTA uses
+the Dudarev combination `U_eff = U - J` for this collinear setup, so the template
+writes `U=U_eff` and `J=0`. DFT+U is applied per SIESTA species, not independently
+per `(element, CN)` row; the command warns when one element occupies multiple
+coordination sublattices.
+
+The generated file is only a starting template. It is not publication-ready
+until the pseudopotentials, basis, MeshCutoff, k-grid, SCF settings, Hubbard U,
+and final magnetic state have been validated and converged. Current SIESTA
+documentation recommends tested PSML data such as Pseudo-Dojo and documents
+both `DFTU.Proj` and the `LDAU.Proj` alias. See the
+[SIESTA pseudopotential guidance](https://siesta-project.org/siesta/Documentation/Pseudopotentials/),
+[SIESTA DFT+U reference](https://docs.siesta-project.org/projects/siesta/en/stable/reference/siesta.html),
+and [Materials Project U-value methodology](https://docs.materialsproject.org/methodology/materials-methodology/calculation-details/gga%2Bu-calculations/hubbard-u-values).
+
 ## Generation methods
 
 - `alternating-index`: assigns `+ - + -` within the selected magnetic-atom list only.
@@ -260,7 +302,11 @@ block.
 
 The analysis corresponding to the CLI `analyze` is not a separate button — it runs automatically on generation and live updates and appears in the right-hand `Analysis` tab as distance shells, cutoff, connectivity, bipartiteness, and the number of layers.
 
-Export can save the DM.InitSpin block, a patched SIESTA input that never overwrites the original, and an XYZ/CIF structure with the initial magmom included. The CLI is the reference scientific implementation, and the GUI controller uses the same core functions.
+Export can save the DM.InitSpin block, a complete SIESTA starting input, a patched
+SIESTA input that never overwrites the original, and an XYZ/CIF structure with the
+initial magmom included. The complete-input action displays the same convergence
+warning and uses the same renderer as `make-input`. The CLI is the reference
+scientific implementation, and the GUI controller uses the same core functions.
 
 ## Input and index preservation
 

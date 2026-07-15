@@ -12,6 +12,7 @@ from typing import Any, Sequence
 
 from . import __version__
 from .fdf_writer import patch_fdf_file, patch_fdf_text, render_dm_init_spin
+from .input_template import render_complete_input
 from .io import parse_dm_init_spin, read_structure
 from .magnetic_sites import (
     guess_oxidation_states,
@@ -228,6 +229,51 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--backup", action="store_true")
     generate.set_defaults(func=_cmd_generate)
 
+    make_input = subparsers.add_parser(
+        "make-input", help="generate a complete SIESTA starting input"
+    )
+    _add_input(make_input)
+    _add_structure_controls(make_input)
+    _add_site_controls(make_input)
+    make_input.add_argument("--method", choices=METHODS, required=True)
+    _add_ordering_controls(make_input)
+    make_input.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="random seed or graph-coloring permutation index (default: 0)",
+    )
+    make_input.add_argument("--output")
+    make_input.add_argument("--write-zero-spins", action="store_true")
+    _add_site_comment_control(make_input)
+    make_input.add_argument(
+        "--basis-size", choices=["SZ", "SZP", "DZ", "DZP", "TZP"], default="DZP"
+    )
+    make_input.add_argument(
+        "--kgrid-cutoff",
+        type=float,
+        default=30.0,
+        metavar="K",
+        help="automatic k-grid length parameter in Angstrom (default: 30)",
+    )
+    make_input.add_argument("--kgrid", type=int, nargs=3, metavar=("N1", "N2", "N3"))
+    make_input.add_argument(
+        "--hubbard-u",
+        nargs="+",
+        help="override default effective U values, e.g. Ni=6.0 Co=3.3",
+    )
+    make_input.add_argument(
+        "--no-lda-u", dest="lda_u", action="store_false", default=True
+    )
+    make_input.add_argument(
+        "--dftu-keyword",
+        choices=["ldau", "dftu"],
+        default="ldau",
+        help="use legacy-compatible LDAU.proj or modern DFTU.Proj spelling",
+    )
+    make_input.add_argument("--system-name")
+    make_input.set_defaults(func=_cmd_make_input)
+
     analyze = subparsers.add_parser("analyze", help="analyze the magnetic graph")
     _add_input(analyze)
     _add_structure_controls(analyze)
@@ -438,6 +484,58 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(patched, encoding="utf-8")
     print(destination)
+    return 0
+
+
+def _cmd_make_input(args: argparse.Namespace) -> int:
+    input_path = _input_path(args)
+    structure = _read_from_args(args)
+    if args.guess_oxidation_states:
+        states = guess_oxidation_states(structure)
+        print(
+            "WARNING: oxidation states were guessed heuristically and must be "
+            "checked before use.",
+            file=sys.stderr,
+        )
+        print(
+            "Guessed oxidation states: " + " ".join(f"{v:g}" for v in states),
+            file=sys.stderr,
+        )
+    _, assignment, spins = generate_assignment(
+        structure,
+        args.magnetic_species,
+        args.method,
+        _moment_values(args),
+        seed=args.seed,
+        **_workflow_kwargs(args),
+    )
+    result = render_complete_input(
+        structure,
+        spins,
+        method=assignment.method,
+        magnetic_species=args.magnetic_species,
+        metadata=assignment.metadata,
+        basis_size=args.basis_size,
+        kgrid_cutoff=args.kgrid_cutoff,
+        kgrid=args.kgrid,
+        hubbard_u=args.hubbard_u,
+        lda_u=args.lda_u,
+        dftu_keyword=args.dftu_keyword,
+        system_name=args.system_name,
+        write_zero_spins=args.write_zero_spins,
+        site_comments=args.site_comments,
+    )
+    for warning in (*assignment.warnings, *result.warnings):
+        print(f"WARNING:\n{warning}", file=sys.stderr)
+    if args.output:
+        destination = Path(args.output)
+        if destination.resolve() == Path(input_path).resolve():
+            raise ValueError("refusing to overwrite the source structure with --output")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(result.text, encoding="utf-8")
+        print(destination)
+    else:
+        print(result.text, end="")
     return 0
 
 
