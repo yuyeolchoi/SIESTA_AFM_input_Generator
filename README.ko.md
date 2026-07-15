@@ -72,6 +72,12 @@ siesta-afm patch examples/input.fdf \
 - `by-coordination`: 자기 원자의 첫 anion shell 배위수로 Td/Oh sublattice를 나눕니다.
 - `random`: `--seed`로 재현 가능한 무작위 초기 부호를 만듭니다. 물리적 자기질서 모델은 아닙니다.
 
+여러 자기 원소를 함께 선택하면 `layer`는 모든 원소를 합친 좌표 층을 기준으로 부호를
+교대합니다. 한 원소가 결합 층의 짝수 또는 홀수 층에만 존재하면 다른 원소는 정상적으로
+교대해도 그 원소 전체가 같은 부호를 받을 수 있으며, 프로그램은 이를 경고합니다.
+다원소 스피넬 ferrimagnet에는 `by-coordination`을 우선 사용하고, 원소별 독립 layer
+패턴이 물리적으로 의도된 경우에만 원소를 따로 처리하십시오.
+
 예:
 
 ```bash
@@ -277,6 +283,9 @@ CLI의 `analyze`에 대응하는 분석은 별도 버튼이 아니라 생성/실
 Export에서는 DM.InitSpin 블록, 원본을 덮어쓰지 않는 패치된 SIESTA 입력, initial
 magmom이 포함된 XYZ/CIF 구조를 저장할 수 있습니다. CLI가 기준 과학 구현이며 GUI
 컨트롤러도 같은 코어 함수를 사용합니다.
+완전한 실행 시작 FDF를 만들려면 `Generate / View`의 눈에 띄는
+`Build complete SIESTA input (make-input)...` 버튼을 사용하십시오. Export 그룹의
+동일 기능 버튼도 보조 진입점으로 유지됩니다.
 
 ## 입력과 인덱스 보존
 

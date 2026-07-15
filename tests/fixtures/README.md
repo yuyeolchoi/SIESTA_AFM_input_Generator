@@ -20,3 +20,7 @@ so tests verify that the final reported state is selected.
 `inverse_spinel_coordination.cif` is a deliberately synthetic, test-only
 geometry for exercising GUI coordination/moment routing. Its distances are not
 physical and it must not be copied into `examples/` or used as a research model.
+
+`NiCo2O4_311_pristine.cif` is a 252-atom relaxed slab regression structure used
+to preserve the observed Co/Ni layer-parity warning and surface coordination
+distributions from a real non-orthogonal NiCo2O4 (311) calculation.

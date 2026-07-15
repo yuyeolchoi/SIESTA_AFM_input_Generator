@@ -1128,12 +1128,27 @@ class DesktopApp:
         ttk.Button(
             actions, text="Open spin file...", command=self._open_spin_file
         ).grid(row=0, column=1, sticky="ew", padx=(3, 0))
+        self.complete_input_action = ttk.Button(
+            actions,
+            text="Build complete SIESTA input (make-input)...",
+            command=self._export_complete_input,
+            state="disabled",
+        )
+        self.complete_input_action.grid(
+            row=1, column=0, columnspan=2, sticky="ew", pady=(7, 2)
+        )
+        ttk.Label(
+            actions,
+            text="Creates a runnable starting FDF; same as `siesta-afm make-input`.",
+            foreground="#555555",
+            wraplength=520,
+        ).grid(row=2, column=0, columnspan=2, sticky="w")
         row += 1
 
         exports = ttk.LabelFrame(panel, text="Export", padding=6)
         exports.grid(row=row, column=0, columnspan=2, sticky="ew", pady=4)
         exports.columnconfigure(0, weight=1)
-        self.export_buttons = [
+        export_group_buttons = [
             ttk.Button(exports, text="DM.InitSpin block...", command=self._save_spin),
             ttk.Button(
                 exports,
@@ -1149,7 +1164,8 @@ class DesktopApp:
                 command=self._export_structure,
             ),
         ]
-        for number, button in enumerate(self.export_buttons):
+        self.export_buttons = [self.complete_input_action, *export_group_buttons]
+        for number, button in enumerate(export_group_buttons):
             button.grid(row=number, column=0, sticky="ew", pady=2)
             button.configure(state="disabled")
 

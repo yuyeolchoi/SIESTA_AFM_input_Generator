@@ -1,3 +1,4 @@
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -7,6 +8,7 @@ from siesta_afm.io import read_structure
 from siesta_afm.neighbors import build_neighbor_graph, classify_coordination_geometry
 from siesta_afm.ordering import (
     NonBipartiteError,
+    analyze_coordination_sites,
     alternating_index,
     by_species_ordering,
     checkerboard_ordering,
@@ -348,6 +350,84 @@ def test_rocksalt_nio_coordination_counts_all_periodic_images(
     result = coordination_ordering(atoms, nickel_indices, anion_species=["O"])
     assert set(result.metadata["coordination_numbers"].values()) == {6}
     assert len(result.signs) == 4 * int(np.prod(repeats))
+
+
+def test_real_nico_311_combined_layering_warns_for_uniform_ni_sign() -> None:
+    atoms = read_structure(
+        ROOT / "tests" / "fixtures" / "NiCo2O4_311_pristine.cif", slab=True
+    )
+    indices = [
+        index for index, symbol in enumerate(atoms.symbols) if symbol in {"Co", "Ni"}
+    ]
+    result = layer_ordering(atoms, indices, axis="y", tolerance=0.25)
+    assert Counter(
+        result.signs[index] for index in indices if atoms.symbols[index] == "Co"
+    ) == {1: 36, -1: 36}
+    assert Counter(
+        result.signs[index] for index in indices if atoms.symbols[index] == "Ni"
+    ) == {1: 36}
+    warning = "\n".join(result.warnings)
+    assert "species Ni is entirely spin-up" in warning
+    assert "combined layering along y" in warning
+    assert "--method by-coordination" in warning
+
+    cobalt_only = [index for index in indices if atoms.symbols[index] == "Co"]
+    assert "entirely spin" not in "\n".join(
+        layer_ordering(atoms, cobalt_only, axis="y", tolerance=0.25).warnings
+    )
+
+
+def test_direction_layering_warns_for_a_uniform_species_sign() -> None:
+    atoms = Structure(
+        ["Ni", "Co", "Ni", "Co"],
+        [[0, 0, 0], [0, 1, 0], [0, 2, 0], [0, 3, 0]],
+        np.eye(3) * 10,
+        (False, False, False),
+    )
+    result = direction_layer_ordering(
+        atoms, range(4), [0, 1, 0], tolerance=0.1
+    )
+    warning = "\n".join(result.warnings)
+    assert "species Ni is entirely spin-up" in warning
+    assert "combined layering along direction (0 1 0)" in warning
+
+
+def test_real_nico_311_gap_based_coordination_keeps_distorted_first_shell() -> None:
+    atoms = read_structure(
+        ROOT / "tests" / "fixtures" / "NiCo2O4_311_pristine.cif", slab=True
+    )
+    indices = [
+        index for index, symbol in enumerate(atoms.symbols) if symbol in {"Co", "Ni"}
+    ]
+    analysis = analyze_coordination_sites(atoms, indices)
+    distributions = {
+        element: Counter(
+            analysis.coordination_numbers[index]
+            for index in indices
+            if atoms.symbols[index] == element
+        )
+        for element in ("Co", "Ni")
+    }
+    assert distributions == {
+        "Co": Counter({6: 66, 3: 6}),
+        "Ni": Counter({4: 24, 3: 12}),
+    }
+
+
+def test_real_nico_311_surface_coordination_error_has_exclusion_hint() -> None:
+    atoms = read_structure(
+        ROOT / "tests" / "fixtures" / "NiCo2O4_311_pristine.cif", slab=True
+    )
+    indices = [
+        index for index, symbol in enumerate(atoms.symbols) if symbol in {"Co", "Ni"}
+    ]
+    with pytest.raises(ValueError) as error:
+        coordination_ordering(atoms, indices)
+    message = str(error.value)
+    assert "CN=3" in message
+    assert "surface-truncated atom" in message
+    assert "--exclude-atoms" in message
+    assert "--up-coordination/--down-coordination" in message
 
 
 def test_direction_layer_warns_that_periodic_wrap_is_not_merged() -> None:

@@ -231,6 +231,49 @@ def distance_shells(
     ]
 
 
+def resolve_first_shell(
+    pairs: Sequence[PairDistance],
+    *,
+    min_gap_ratio: float = 0.10,
+    max_neighbors: int = 12,
+) -> tuple[float, list[PairDistance]]:
+    """Resolve a local coordination shell from the first significant gap.
+
+    Relaxed bonds in one physical shell can vary by more than the fixed
+    tolerance used by :func:`distance_shells`.  This coordination-specific
+    resolver therefore retains consecutive ligands until their next distance
+    jump is at least ``min_gap_ratio`` of the current distance.  Only the first
+    ``max_neighbors`` possible boundaries are considered so a large gap near
+    the edge of the finite periodic-image search cannot swallow several shells.
+    If no significant gap exists, the legacy fixed-tolerance first shell is
+    retained as a conservative fallback.
+    """
+
+    if min_gap_ratio <= 0:
+        raise ValueError("first-shell minimum gap ratio must be positive")
+    if max_neighbors < 1:
+        raise ValueError("first-shell maximum neighbor count must be positive")
+    ordered = sorted(pairs, key=lambda item: (item.distance, item.i, item.j))
+    if not ordered:
+        raise ValueError("cannot resolve a first shell without distances")
+
+    boundary_limit = min(len(ordered) - 1, max_neighbors)
+    for boundary in range(1, boundary_limit + 1):
+        upper = ordered[boundary - 1].distance
+        lower = ordered[boundary].distance
+        if (lower - upper) / max(upper, 1e-12) >= min_gap_ratio:
+            return (upper + lower) / 2.0, ordered[:boundary]
+
+    first_shell = distance_shells(ordered)[0][1]
+    upper = max(pair.distance for pair in first_shell)
+    if len(first_shell) < len(ordered):
+        lower = ordered[len(first_shell)].distance
+        cutoff = (upper + lower) / 2.0
+    else:
+        cutoff = upper * 1.05 + 1e-6
+    return cutoff, list(first_shell)
+
+
 def automatic_cutoff(
     pairs: Sequence[PairDistance], *, shell: int = 1, tolerance: float = 0.05
 ) -> float:

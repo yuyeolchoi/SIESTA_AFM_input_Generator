@@ -111,6 +111,13 @@ and [Materials Project U-value methodology](https://docs.materialsproject.org/me
 - `by-coordination`: splits Td/Oh sublattices by each magnetic atom's first anion-shell coordination number.
 - `random`: produces reproducible random initial signs with `--seed`. This is not a physical magnetic-ordering model.
 
+`layer` alternates the combined coordinate stack when multiple magnetic elements
+are selected. If one element occurs only on the even- or odd-parity layers of
+that combined stack, every atom of that element can receive the same sign even
+though the other element alternates normally. The program warns when this
+happens. For multi-species spinel ferrimagnets, prefer `by-coordination`; run
+species separately only when independent layer patterns are physically intended.
+
 Examples:
 
 ```bash
@@ -312,6 +319,9 @@ SIESTA input that never overwrites the original, and an XYZ/CIF structure with t
 initial magmom included. The complete-input action displays the same convergence
 warning and uses the same renderer as `make-input`. The CLI is the reference
 scientific implementation, and the GUI controller uses the same core functions.
+For a complete runnable starting FDF, use the prominent
+`Build complete SIESTA input (make-input)...` button in `Generate / View`; the
+similarly named Export action remains available as a secondary entry point.
 
 ## Input and index preservation
 

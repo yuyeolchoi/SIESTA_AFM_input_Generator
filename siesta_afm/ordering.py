@@ -16,10 +16,10 @@ from .neighbors import (
     build_neighbor_graph,
     classify_coordination_geometry,
     cross_pair_distances,
-    distance_shells,
     magnetic_pair_distances,
     periodic_self_image_distance,
     resolve_cutoff,
+    resolve_first_shell,
 )
 from .structure import Structure
 
@@ -233,17 +233,11 @@ def analyze_coordination_sites(
         # lengths. Resolve the first shell per magnetic site.
         for index in indices:
             site_pairs = [pair for pair in pairs if pair.i == index]
-            shells = distance_shells(site_pairs)
-            if not shells:
+            if not site_pairs:
                 raise ValueError(
                     f"no finite anion distances were found for atom {index + 1}"
                 )
-            first_upper = max(pair.distance for pair in shells[0][1])
-            site_cutoffs[index] = (
-                (first_upper + min(pair.distance for pair in shells[1][1])) / 2.0
-                if len(shells) > 1
-                else first_upper * 1.05 + 1e-6
-            )
+            site_cutoffs[index], _ = resolve_first_shell(site_pairs)
         resolved = max(site_cutoffs.values())
     else:
         resolved = float(anion_cutoff)
@@ -324,7 +318,12 @@ def coordination_ordering(
         signs[index] = 1 if matches_up else -1
         sublattices[index] = "up" if matches_up else "down"
     if unclassified:
-        raise ValueError("; ".join(unclassified))
+        raise ValueError(
+            "; ".join(unclassified)
+            + ". If an unclassified site is a surface-truncated atom in a slab, "
+            "exclude it with --exclude-atoms or include its CN in "
+            "--up-coordination/--down-coordination."
+        )
 
     warnings: list[str] = []
     up_elements = {
@@ -438,6 +437,9 @@ def layer_ordering(
             "uncompensated AFM slab: net initial moment is nonzero "
             "(odd magnetic layer count)"
         )
+    warnings.extend(
+        _combined_layer_species_warnings(structure, signs, f"along {axis}")
+    )
     return SpinAssignment(
         signs,
         "layer",
@@ -494,6 +496,12 @@ def direction_layer_ordering(
             "uncompensated AFM slab: net initial moment is nonzero "
             "(odd magnetic layer count)"
         )
+    direction_text = " ".join(f"{value:.6g}" for value in vector)
+    warnings.extend(
+        _combined_layer_species_warnings(
+            structure, signs, f"along direction ({direction_text})"
+        )
+    )
     return SpinAssignment(
         signs,
         "layer",
@@ -504,6 +512,40 @@ def direction_layer_ordering(
         },
         warnings,
     )
+
+
+def _combined_layer_species_warnings(
+    structure: Structure,
+    signs: Mapping[int, int],
+    direction: str,
+) -> list[str]:
+    """Warn when combined multi-element layering collapses one species' sign."""
+
+    signs_by_species: dict[str, set[int]] = {}
+    display_names: dict[str, str] = {}
+    for index, sign in signs.items():
+        symbol = structure.symbols[index]
+        normalized = symbol.lower()
+        display_names.setdefault(normalized, symbol)
+        signs_by_species.setdefault(normalized, set()).add(sign)
+    if len(signs_by_species) < 2:
+        return []
+
+    warnings: list[str] = []
+    for normalized, species_signs in signs_by_species.items():
+        if len(species_signs) != 1:
+            continue
+        sign = next(iter(species_signs))
+        orientation = "spin-up" if sign > 0 else "spin-down"
+        parity = "even" if sign > 0 else "odd"
+        warnings.append(
+            f"species {display_names[normalized]} is entirely {orientation} under "
+            f"combined layering {direction}; its sublattice coincides only with "
+            f"{parity}-parity layers of the combined stack. Consider --method "
+            "by-coordination for multi-species ferrimagnets, or layer each "
+            "species separately."
+        )
+    return warnings
 
 
 def detect_direction_layers(

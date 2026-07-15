@@ -360,7 +360,9 @@ def test_coordination_geometry_reaches_generated_comments_and_can_be_edited() ->
     assert spinel.block.count("# Co  (Oh, CN=6)") == 16
 
 
-def test_default_gui_layout_keeps_visible_inputs_wide_enough() -> None:
+def test_default_gui_layout_keeps_visible_inputs_wide_enough(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     dependencies = gui._load_gui_dependencies()
     try:
         root = dependencies.tk.Tk()
@@ -377,6 +379,8 @@ def test_default_gui_layout_keeps_visible_inputs_wide_enough() -> None:
         assert visible_inputs
         assert min(widget.winfo_width() for widget in visible_inputs) >= 120
         assert app.main_pane.sashpos(0) >= gui._LEFT_PANEL_MIN_WIDTH
+        assert "make-input" in app.complete_input_action.cget("text")
+        assert app.complete_input_action.cget("command")
         assert app.method_option_frames["layer"].winfo_ismapped()
         assert not app.method_option_frames["by-coordination"].winfo_ismapped()
         app.structure_path = (
@@ -395,6 +399,35 @@ def test_default_gui_layout_keeps_visible_inputs_wide_enough() -> None:
             for row in app.magnetization_rows
             if row.use
         ] == [("Ni", 6), ("Co", 4), ("Co", 6)]
+
+        generated = gui.run_generation(
+            gui.GenerationParams(
+                structure_path=ROOT / "examples" / "CuO_bulk.cif",
+                magnetic_species=("Cu",),
+                method="layer",
+                moment="0.5",
+            )
+        )
+        destination = tmp_path / "button_input.fdf"
+        exported: list[Path] = []
+        monkeypatch.setattr(
+            app.deps.filedialog,
+            "asksaveasfilename",
+            lambda **_kwargs: str(destination),
+        )
+        monkeypatch.setattr(
+            app.deps.messagebox, "showwarning", lambda *_args, **_kwargs: None
+        )
+
+        def record_export(_result: object, path: str | Path, **_options: object) -> Path:
+            exported.append(Path(path))
+            return Path(path)
+
+        monkeypatch.setattr(gui, "export_complete_input", record_export)
+        app.current_result = generated
+        app.complete_input_action.configure(state="normal")
+        app.complete_input_action.invoke()
+        assert exported == [destination]
     finally:
         root.destroy()
 

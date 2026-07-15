@@ -7,6 +7,7 @@ from siesta_afm.neighbors import (
     build_neighbor_graph,
     count_anion_neighbors,
     minimum_image_vector,
+    resolve_first_shell,
 )
 from siesta_afm.structure import Structure
 
@@ -80,6 +81,16 @@ def test_automatic_cutoff_selects_requested_shell() -> None:
     ]
     assert np.isclose(automatic_cutoff(pairs, shell=1), 1.51)
     assert automatic_cutoff(pairs, shell=2) > 2.02
+
+
+def test_coordination_first_shell_tolerates_relaxed_bond_dispersion() -> None:
+    pairs = [
+        PairDistance(0, index, distance, np.zeros(3))
+        for index, distance in enumerate((1.93, 1.95, 1.97, 2.02, 3.40), start=1)
+    ]
+    cutoff, first_shell = resolve_first_shell(pairs)
+    assert 2.02 < cutoff < 3.40
+    assert [pair.distance for pair in first_shell] == [1.93, 1.95, 1.97, 2.02]
 
 
 def test_coordination_image_search_expands_beyond_adjacent_cells() -> None:
