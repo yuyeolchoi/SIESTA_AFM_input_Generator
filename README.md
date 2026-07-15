@@ -285,6 +285,11 @@ counting ligand pairs with angles of at least 170°. Geometry labels are editabl
 estimates; moment syntax remains `Element@CN`. An edited label is also written to the
 corresponding `DM.InitSpin` comments. If coordination analysis fails, the GUI keeps
 usable element-level rows and reports the reason instead of clearing the table.
+Each `(Element, CN)` use checkbox is independent. Unchecking, for example, only
+`Co@6` leaves `Co@4` enabled and keeps Co in `--magnetic-species`; the omitted
+`Co@6` moment then produces the same explicit partial-moment error as the CLI.
+Set that row's moment to `0.0`, or use `--exclude-atoms` / `--adsorbate-indices`
+for specific atom indices, when those sites must be fully excluded.
 
 Only settings relevant to the selected method are displayed. The input and result
 areas are separated by a draggable pane, and short labels plus help text keep input

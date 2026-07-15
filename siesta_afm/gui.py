@@ -112,6 +112,7 @@ class MagnetizationRow:
     value: str
     count: int
     role: str = "-"
+    atom_indices: tuple[int, ...] = ()
 
 
 def _element_counts(structure: Structure) -> dict[str, int]:
@@ -132,6 +133,26 @@ def magnetic_species_from_rows(rows: Sequence[MagnetizationRow]) -> tuple[str, .
             result.append(row.element)
             seen.add(normalized)
     return tuple(result)
+
+
+def toggle_magnetization_use(
+    rows: Sequence[MagnetizationRow], row_index: int, method: str
+) -> MagnetizationRow:
+    """Toggle one table selection, independently per CN when applicable."""
+
+    row = rows[row_index]
+    new_value = not row.use
+    if method == "by-coordination" and row.coordination is not None:
+        row.use = new_value
+        return row
+    for candidate in rows:
+        if candidate.element.lower() == row.element.lower():
+            candidate.use = new_value
+            if not new_value:
+                candidate.label = ""
+                candidate.value = ""
+                candidate.role = "-"
+    return row
 
 
 def moment_text_from_rows(
@@ -222,6 +243,11 @@ def magnetization_rows_from_structure(
         }
     else:
         use_by_element = {element.lower(): element.lower() in defaults for element in counts}
+    use_by_site = {
+        (row.element.lower(), row.coordination): row.use
+        for row in existing_rows
+        if row.coordination is not None
+    }
     values_by_site = {
         (row.element.lower(), row.coordination): row.value
         for row in existing_rows
@@ -264,14 +290,28 @@ def magnetization_rows_from_structure(
                     value=(value or "") if use else "",
                     count=count,
                     role=role,
+                    atom_indices=tuple(
+                        index + 1
+                        for index, symbol in enumerate(structure.symbols)
+                        if symbol.lower() == normalized
+                    ),
                 )
             )
         return rows
 
+    # Keep coordination rows available even when every site row for an element
+    # is currently unchecked. Otherwise a refresh would discard the rows and
+    # make it impossible to re-enable one CN group independently.
+    analyzed_elements = {
+        row.element.lower()
+        for row in existing_rows
+        if row.coordination is not None
+    }
     selected = [
         index
         for index, symbol in enumerate(structure.symbols)
         if use_by_element.get(symbol.lower(), False)
+        or symbol.lower() in analyzed_elements
     ]
     if not selected:
         return [
@@ -285,7 +325,10 @@ def magnetization_rows_from_structure(
         anion_cutoff=anion_cutoff,
     )
     selected_species = [
-        element for element in counts if use_by_element.get(element.lower(), False)
+        element
+        for element in counts
+        if use_by_element.get(element.lower(), False)
+        or element.lower() in analyzed_elements
     ]
     combination_counts = _coordination_combination_counts(
         structure,
@@ -314,17 +357,18 @@ def magnetization_rows_from_structure(
             value = f"{defaults[normalized]:.1f}"
         rows.append(
             MagnetizationRow(
-                True,
+                use_by_site.get((normalized, coordination), True),
                 element,
                 labels_by_site.get((normalized, coordination), inferred_label),
                 coordination,
                 value or "",
                 count,
                 "-",
+                tuple(index + 1 for index in indices),
             )
         )
     for element, count in counts.items():
-        if not use_by_element.get(element.lower(), False):
+        if element.lower() not in {item.lower() for item in selected_species}:
             rows.append(MagnetizationRow(False, element, "", None, "", count, "-"))
     return rows
 
@@ -745,6 +789,7 @@ class DesktopApp:
         self.control_inputs: list[Any] = []
         self.method_option_frames: dict[str, Any] = {}
         self._coordination_fallback: str | None = None
+        self._coordination_use_note: str | None = None
         self._pane_width_initialized = False
 
         root.title("SIESTA AFM initial-spin generator")
@@ -889,7 +934,12 @@ class DesktopApp:
         self.magnetization_tree.bind("<Double-1>", self._edit_magnetization_cell)
         ttk.Label(
             table_frame,
-            text="Double-click use, label, value, or role to edit. CN and count are read-only.",
+            text=(
+                "Double-click use, label, value, or role to edit. CN and count "
+                "are read-only. In by-coordination mode, unchecking one "
+                "coordination site keeps the element selected; set moment 0 or "
+                "use --exclude-atoms to fully exclude those atoms."
+            ),
             foreground="#666666",
             wraplength=530,
         ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(3, 0))
@@ -1313,16 +1363,19 @@ class DesktopApp:
         name = names[column_index]
         row = self.magnetization_rows[row_index]
         if name == "use":
-            new_value = not row.use
-            for candidate in self.magnetization_rows:
-                if candidate.element.lower() == row.element.lower():
-                    candidate.use = new_value
-                    if not new_value:
-                        candidate.label = ""
-                        candidate.coordination = None
-                        candidate.value = ""
-                        candidate.role = "-"
+            method = self.method_var.get()
+            toggle_magnetization_use(self.magnetization_rows, row_index, method)
+            if method == "by-coordination" and row.coordination is not None:
+                indices = ", ".join(str(index) for index in row.atom_indices) or "unknown"
+                self._coordination_use_note = (
+                    f"{row.element} CN={row.coordination} use={row.use}; atom "
+                    f"indices: {indices}. Unchecking one coordination site keeps "
+                    "the element selected; set moment 0 or use --exclude-atoms "
+                    "to fully exclude those atoms."
+                )
             self._table_changed(refresh=True)
+            if self._coordination_use_note:
+                self.status_var.set(self._coordination_use_note)
             return
         if name == "label" and self.method_var.get() != "by-coordination":
             return
@@ -1439,6 +1492,8 @@ class DesktopApp:
         if self._table_after_id is not None:
             self.root.after_cancel(self._table_after_id)
             self._table_after_id = None
+        if self.method_var.get() != "by-coordination":
+            self._coordination_use_note = None
         self._show_method_options()
         if self.current_structure is not None:
             self._refresh_magnetization_table()
@@ -1518,6 +1573,7 @@ class DesktopApp:
             return False
         self.structure_path = candidate
         self.current_structure = structure
+        self._coordination_use_note = None
         self.file_var.set(str(self.structure_path))
         self.viewing_spin_path = None
         self.mode_var.set("generation mode")
@@ -1726,6 +1782,8 @@ class DesktopApp:
         status = f"Generated {len(result.spins)} magnetic site(s)."
         if result.warnings:
             status += " " + " | ".join(result.warnings)
+        if self._coordination_use_note:
+            status += " " + self._coordination_use_note
         self.status_var.set(status)
 
     def _open_spin_file(self) -> None:

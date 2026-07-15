@@ -212,6 +212,66 @@ def test_moment_text_is_derived_from_table_rows() -> None:
     assert gui.moment_text_from_rows(rows, "by-coordination") is None
 
 
+def test_coordination_use_toggle_is_independent_and_survives_refresh() -> None:
+    structure = read_structure(
+        ROOT / "tests" / "fixtures" / "inverse_spinel_coordination.cif",
+        slab=True,
+    )
+    rows = gui.magnetization_rows_from_structure(
+        structure, "by-coordination", anion_species=("O",)
+    )
+    co6_index = next(
+        index
+        for index, row in enumerate(rows)
+        if row.element == "Co" and row.coordination == 6
+    )
+    toggled = gui.toggle_magnetization_use(rows, co6_index, "by-coordination")
+    assert not toggled.use
+    assert next(row for row in rows if row.element == "Co" and row.coordination == 4).use
+
+    refreshed = gui.magnetization_rows_from_structure(
+        structure,
+        "by-coordination",
+        existing_rows=rows,
+        anion_species=("O",),
+    )
+    assert gui.magnetic_species_from_rows(refreshed) == ("Ni", "Co")
+    assert gui.moment_text_from_rows(refreshed, "by-coordination") == (
+        "Ni@6=2.0 Co@4=3.0"
+    )
+    assert not next(
+        row for row in refreshed if row.element == "Co" and row.coordination == 6
+    ).use
+    assert next(
+        row for row in refreshed if row.element == "Co" and row.coordination == 6
+    ).atom_indices == (3, 4)
+
+    with pytest.raises(ValueError, match=r"no initial moment specified.*Co@6"):
+        gui.run_generation(
+            gui.GenerationParams(
+                structure_path=ROOT
+                / "tests"
+                / "fixtures"
+                / "inverse_spinel_coordination.cif",
+                magnetic_species=gui.magnetic_species_from_rows(refreshed),
+                method="by-coordination",
+                moment=gui.moment_text_from_rows(refreshed, "by-coordination"),
+                slab=True,
+                anion_species=("O",),
+            )
+        )
+
+
+def test_noncoordination_use_toggle_still_applies_by_element() -> None:
+    rows = [
+        gui.MagnetizationRow(True, "Ni", "-", None, "2.0", 2),
+        gui.MagnetizationRow(False, "O", "", None, "", 8),
+    ]
+    gui.toggle_magnetization_use(rows, 0, "layer")
+    assert not rows[0].use
+    assert (rows[0].label, rows[0].value) == ("", "")
+
+
 def test_structure_rows_list_elements_defaults_and_method_grouping() -> None:
     structure = read_structure(
         ROOT / "tests" / "fixtures" / "inverse_spinel_coordination.cif",

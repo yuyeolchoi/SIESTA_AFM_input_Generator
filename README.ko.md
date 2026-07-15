@@ -339,8 +339,12 @@ pseudopotential, basis, MeshCutoff, k-grid, SCF 설정, Hubbard U, 최종 자기
 [Materials Project U 값 방법론](https://docs.materialsproject.org/methodology/materials-methodology/calculation-details/gga%2Bu-calculations/hubbard-u-values)을
 참고하십시오.
 
-GUI Export의 `Complete SIESTA input...` 버튼은 `make-input`과 같은 렌더러와 경고를
-사용합니다.
+GUI의 `by-coordination` 테이블에서 `use`는 이제 `(원소, CN)`별로 독립적입니다.
+예를 들어 `Co@6`만 해제해도 `Co@4`가 켜져 있으면 Co는 자기 원소로 남습니다.
+그 상태에서 `Co@6` moment가 없으면 CLI와 같은 부분 moment 오류가 발생합니다.
+해당 사이트를 0 스핀으로 두려면 moment를 `0.0`으로 설정하고, 특정 원자를 완전히
+제외하려면 `--exclude-atoms` 또는 `--adsorbate-indices`를 사용하십시오. GUI Export의
+`Complete SIESTA input...` 버튼은 `make-input`과 같은 렌더러와 경고를 사용합니다.
 
 ## 테스트
 
