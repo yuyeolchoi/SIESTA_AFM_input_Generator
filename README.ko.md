@@ -106,11 +106,22 @@ siesta-afm generate examples/Co3O4_spinel_COD1538531.cif \
   --magnetic-species Co \
   --method by-coordination \
   --moment Co@4=3.0 Co@6=0.5
+
+siesta-afm generate inverse_spinel.cif \
+  --magnetic-species Ni Co \
+  --method by-coordination \
+  --anion-species O \
+  --moment Ni@6=2.0 Co@4=2.0 Co@6=0.0
 ```
 
 `--moment 0.5`는 모든 선택 원소에 같은 크기를 쓰고, `--moment Cu=0.5 Ni=1.0`은 원소별 값을 씁니다. `Element@CN=value`는 같은 원소의 서로 다른 배위 환경을 구분합니다. 적용 우선순위는 site CSV > `Element@CN` > `Element` > 전역 값입니다. `--site-moment-file moments.csv`의 CSV에는 최소 `atom_index,moment` 열이 필요하고, 선택적으로 `element,oxidation_state` 열을 둘 수 있습니다.
 
 `by-species`의 up/down 합집합은 `--magnetic-species`와 정확히 같아야 합니다. 이 방법은 Ni/Co처럼 원소가 다른 sublattice에는 적합하지만, 같은 원소가 Td와 Oh 자리를 모두 차지하는 inverse spinel은 구분하지 못하므로 `by-coordination`을 사용해야 합니다. `by-coordination`은 O, S, Se, Te, N, F, Cl 중 구조에 하나만 존재하면 anion을 자동 감지하며, 여러 후보가 있으면 `--anion-species`를 요구합니다. 같은 basis anion의 서로 다른 주기 이미지도 각각 별도 이웃으로 세며, 기본 분류는 up CN=6, down CN=4입니다. `--anion-cutoff`, `--coordination-tolerance`로 판정을 조정할 수 있습니다.
+
+위 역스피넬 명령은 기본 배위 부격자 분류를 이용해 Ni(Oh)=+2 μB,
+Co(Td)=−2 μB, 저스핀 Co(Oh)=0을 만듭니다. CN=4와 CN=6 Co에 하나의
+`Co=value`를 사용해도 실행은 허용하지만, 두 Co 부격자를 독립적으로 나타낼 수 없으므로
+이제 경고가 출력됩니다.
 
 Co₃O₄ 예제는 [COD 1538531](https://www.crystallography.net/cod/1538531.html)
 (Roth, 1964)의 퍼블릭 도메인 구조 데이터를 사용합니다. Co 배위수 분포는 Td CN=4가 8개,
@@ -217,6 +228,17 @@ sublattice, A/C/G preset과 임의 layer 방향, 회전·확대 가능한 3D 미
 graph 분석과 DM.InitSpin 미리보기를 제공합니다. 파라미터 변경은 400 ms
 디바운스로 자동 반영되며 `Live update`를 끌 수 있습니다. 기존 스핀 파일도 현재 구조
 위에서 열어 볼 수 있습니다.
+
+`by-coordination`에서는 `Suggest` 버튼이 구조에 실제로 존재하는 `Element@CN` 조합을
+감지하고, 비어 있거나 단일 전역값인 moment 필드를 수정 가능한 자리별 템플릿으로
+바꿉니다. 감지된 조합과 원자 수는 필드 아래에 계속 표시됩니다. `Site moment file`은
+CLI의 `--site-moment-file`과 같은 CSV를 받으며 site CSV > `Element@CN` > `Element` >
+전역값 우선순위를 그대로 사용합니다.
+
+생성 후 `Sites` 탭에는 모든 자기 원자가 입력 순서대로 element, CN, sublattice, sign,
+moment와 함께 표시됩니다. 하단에서 `n_up`, `n_down`, `n_zero`, 초기 net moment를 바로
+확인할 수 있습니다. 스핀 파일 뷰어에서도 같은 표를 사용하되, 스핀 블록에 저장되지 않는
+CN과 sublattice는 `-`로 표시합니다.
 
 CLI의 `analyze`에 대응하는 분석은 별도 버튼이 아니라 생성/실시간 갱신 때 자동으로
 실행되며 오른쪽 `Analysis` 탭에 거리 shell, cutoff, 연결성, 이분성 및 layer 수로

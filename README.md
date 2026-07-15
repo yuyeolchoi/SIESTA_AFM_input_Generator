@@ -103,11 +103,22 @@ siesta-afm generate examples/Co3O4_spinel_COD1538531.cif \
   --magnetic-species Co \
   --method by-coordination \
   --moment Co@4=3.0 Co@6=0.5
+
+siesta-afm generate inverse_spinel.cif \
+  --magnetic-species Ni Co \
+  --method by-coordination \
+  --anion-species O \
+  --moment Ni@6=2.0 Co@4=2.0 Co@6=0.0
 ```
 
 `--moment 0.5` applies the same magnitude to every selected element, while `--moment Cu=0.5 Ni=1.0` sets per-element values. `Element@CN=value` distinguishes different coordination environments of the same element. The resolution priority is site CSV > `Element@CN` > `Element` > global value. The CSV given to `--site-moment-file moments.csv` requires at least `atom_index,moment` columns and may optionally include `element,oxidation_state` columns.
 
 For `by-species`, the union of up/down must exactly match `--magnetic-species`. That method suits distinct-element sublattices such as Ni/Co, but it cannot separate an inverse spinel in which one element occupies both Td and Oh sites — use `by-coordination` there. `by-coordination` auto-detects the anion when exactly one of O, S, Se, Te, N, F, Cl is present, and requires `--anion-species` when several candidates exist. It counts distinct periodic images of the same basis anion as separate neighbors, and the default classification is up CN=6, down CN=4. Use `--anion-cutoff` and `--coordination-tolerance` to tune the decision.
+
+In the inverse-spinel command above, the default coordination sublattices produce
+Ni(Oh)=+2 μB, Co(Td)=−2 μB, and low-spin Co(Oh)=0. Using one `Co=value`
+for both CN=4 and CN=6 sites is allowed but now emits a warning because it cannot
+represent those two Co sublattices independently.
 
 The Co₃O₄ example uses the public-domain structure data from [COD 1538531](https://www.crystallography.net/cod/1538531.html) (Roth, 1964). Its Co coordination distribution is 8 atoms with Td CN=4 and 16 atoms with Oh CN=6.
 
@@ -194,6 +205,18 @@ siesta-afm-gui
 ```
 
 The GUI provides structure-file selection; magnetic element / method / moment / cutoff / layer settings; species and coordination sublattices; the A/C/G presets and an arbitrary layer direction; a rotatable and zoomable 3D preview; and graph analysis with a DM.InitSpin preview. Parameter changes are applied automatically with a 400 ms debounce, and `Live update` can be turned off. Existing spin files can also be opened on top of the current structure.
+
+For `by-coordination`, `Suggest` detects the actual `Element@CN` combinations and
+replaces an empty or single global moment with an editable site-specific template.
+The detected combinations and atom counts remain visible below the field. `Site
+moment file` accepts the same CSV as CLI `--site-moment-file` and keeps the priority
+site CSV > `Element@CN` > `Element` > global.
+
+After generation, the `Sites` tab lists every magnetic atom in input order with its
+element, CN, sublattice, sign, and moment. Its footer shows `n_up`, `n_down`,
+`n_zero`, and the net initial moment. The spin-file viewer populates the same table,
+with CN and sublattice shown as `-` because those values are not stored in a spin
+block.
 
 The analysis corresponding to the CLI `analyze` is not a separate button — it runs automatically on generation and live updates and appears in the right-hand `Analysis` tab as distance shells, cutoff, connectivity, bipartiteness, and the number of layers.
 

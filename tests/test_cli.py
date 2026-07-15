@@ -302,3 +302,33 @@ def test_enumerate_graph_coloring_varies_color_spin_permutation(
         rows = list(csv.DictReader(handle))
     assert all(float(row["afm_score"]) == pytest.approx(1 / 3) for row in rows)
     assert "does not minimize magnetic energy" in capsys.readouterr().err
+
+
+def test_by_coordination_cli_warns_for_ambiguous_element_moment(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output = tmp_path / "inverse_spinel.fdf"
+    code = main(
+        [
+            "generate",
+            str(ROOT / "tests" / "fixtures" / "inverse_spinel_coordination.cif"),
+            "--slab",
+            "--magnetic-species",
+            "Ni",
+            "Co",
+            "--method",
+            "by-coordination",
+            "--anion-species",
+            "O",
+            "--moment",
+            "Ni=2.0",
+            "Co=2.0",
+            "--output",
+            str(output),
+        ]
+    )
+    assert code == 0
+    assert output.exists()
+    stderr = capsys.readouterr().err
+    assert "element Co occupies both CN=4 and CN=6 sites" in stderr
+    assert "Co@4=... and Co@6=..." in stderr

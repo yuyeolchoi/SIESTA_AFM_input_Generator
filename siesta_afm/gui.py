@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from .fdf_writer import patch_fdf_text, render_dm_init_spin
 from .io import parse_dm_init_spin, read_structure
-from .ordering import SpinAssignment
+from .magnetic_sites import parse_moment_arguments, select_magnetic_sites
+from .ordering import SpinAssignment, coordination_ordering
 from .structure import Structure
 from .validation import (
     ValidationReport,
@@ -44,6 +45,7 @@ class GenerationParams:
     magnetic_species: tuple[str, ...]
     method: str = "layer"
     moment: str = "0.5"
+    site_moment_file: str | Path | None = None
     axis: str = "z"
     layer_direction: tuple[float, float, float] | None = None
     fractional_layers: bool = False
@@ -91,6 +93,149 @@ class SpinFileResult:
     warnings: tuple[str, ...]
 
 
+def _coordination_combination_counts(
+    structure: Structure,
+    indices: Sequence[int],
+    coordinations: Mapping[int, object],
+    magnetic_species: Sequence[str],
+) -> dict[tuple[str, int], int]:
+    raw_counts: dict[tuple[str, int], int] = {}
+    for index in indices:
+        key = (structure.symbols[index], int(coordinations[index]))
+        raw_counts[key] = raw_counts.get(key, 0) + 1
+    species_order = {
+        symbol.lower(): order for order, symbol in enumerate(magnetic_species)
+    }
+    return dict(
+        sorted(
+            raw_counts.items(),
+            key=lambda item: (
+                species_order.get(item[0][0].lower(), len(species_order)),
+                item[0][1],
+                item[0][0].lower(),
+            ),
+        )
+    )
+
+
+def detect_coordination_combinations(
+    structure: Structure,
+    magnetic_species: Sequence[str],
+    *,
+    anion_species: Sequence[str] | None = None,
+    anion_cutoff: str | float | None = "auto",
+    up_coordination: Sequence[int] = (6,),
+    down_coordination: Sequence[int] = (4,),
+    coordination_tolerance: int = 0,
+) -> dict[tuple[str, int], int]:
+    """Count detected magnetic ``(element, CN)`` site types in display order."""
+
+    indices = select_magnetic_sites(structure, magnetic_species)
+    assignment = coordination_ordering(
+        structure,
+        indices,
+        anion_species=anion_species,
+        anion_cutoff=anion_cutoff,
+        up_coordination=up_coordination,
+        down_coordination=down_coordination,
+        coordination_tolerance=coordination_tolerance,
+    )
+    coordinations = assignment.metadata["coordination_numbers"]
+    if not isinstance(coordinations, dict):
+        raise ValueError("coordination analysis did not return per-atom CN values")
+    return _coordination_combination_counts(
+        structure, indices, coordinations, magnetic_species
+    )
+
+
+def format_detected_coordination(
+    counts: dict[tuple[str, int], int],
+) -> str:
+    details = ", ".join(
+        f"{element}@{coordination} ({count} {'atom' if count == 1 else 'atoms'})"
+        for (element, coordination), count in counts.items()
+    )
+    return "detected: " + (details or "none")
+
+
+def coordination_moment_template(
+    counts: dict[tuple[str, int], int], default_moment: float = 1.0
+) -> str:
+    """Build an editable ``Element@CN=value`` moment template."""
+
+    return " ".join(
+        f"{element}@{coordination}={abs(default_moment):g}"
+        for element, coordination in counts
+    )
+
+
+def suggested_coordination_moment_text(
+    current_text: str, counts: dict[tuple[str, int], int]
+) -> str | None:
+    """Return a safe suggestion only for blank or single-global input."""
+
+    text = current_text.strip()
+    if not text:
+        return coordination_moment_template(counts)
+    try:
+        global_moment, by_element, by_coordination = parse_moment_arguments(text)
+    except ValueError:
+        return None
+    if by_element or by_coordination or global_moment is None:
+        return None
+    return coordination_moment_template(counts, global_moment)
+
+
+def site_assignment_rows(
+    result: GenerationResult | SpinFileResult,
+) -> list[dict[str, object]]:
+    """Return input-order site rows for the GUI without requiring Tk."""
+
+    assignment = result.assignment if isinstance(result, GenerationResult) else None
+    indices = (
+        result.magnetic_indices
+        if isinstance(result, GenerationResult)
+        else sorted(result.spins)
+    )
+    coordinations = (
+        assignment.metadata.get("coordination_numbers", {}) if assignment else {}
+    )
+    sublattices = (
+        assignment.metadata.get("sublattice_classification", {}) if assignment else {}
+    )
+    if not isinstance(coordinations, dict):
+        coordinations = {}
+    if not isinstance(sublattices, dict):
+        sublattices = {}
+    rows: list[dict[str, object]] = []
+    for index in sorted(indices):
+        spin = float(result.spins.get(index, 0.0))
+        rows.append(
+            {
+                "atom": index + 1,
+                "element": result.structure.symbols[index],
+                "CN": coordinations.get(index, "-"),
+                "sublattice": sublattices.get(index, "-"),
+                "sign": "+" if spin > 0 else "-" if spin < 0 else "0",
+                "moment": abs(spin),
+            }
+        )
+    return rows
+
+
+def site_assignment_summary(result: GenerationResult | SpinFileResult) -> str:
+    values = [float(value) for value in result.spins.values()]
+    net_moment = sum(values)
+    if abs(net_moment) < 1e-12:
+        net_moment = 0.0
+    return (
+        f"n_up = {sum(value > 0 for value in values)} / "
+        f"n_down = {sum(value < 0 for value in values)} / "
+        f"n_zero = {sum(value == 0 for value in values)}, "
+        f"net moment = {net_moment:g} μB"
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _CameraState:
     elev: float
@@ -123,6 +268,9 @@ def run_generation(params: GenerationParams) -> GenerationResult:
         params.magnetic_species,
         params.method,
         params.moment,
+        site_moment_file=(
+            str(params.site_moment_file) if params.site_moment_file else None
+        ),
         axis=params.axis,
         layer_direction=params.layer_direction,
         layer_tolerance=params.layer_tolerance,
@@ -326,6 +474,8 @@ class DesktopApp:
         self.species_var = tk.StringVar(value="Cu")
         self.method_var = tk.StringVar(value="layer")
         self.moment_var = tk.StringVar(value="0.5")
+        self.site_moment_file_var = tk.StringVar(value="")
+        self.detected_coordination_var = tk.StringVar(value="detected: -")
         self.axis_var = tk.StringVar(value="z")
         self.layer_direction_var = tk.StringVar(value="")
         self.fractional_layers_var = tk.BooleanVar(value=False)
@@ -386,9 +536,40 @@ class DesktopApp:
         row = 2
         row = self._entry_row(panel, row, "Magnetic species", self.species_var)
         row = self._combo_row(panel, row, "Method", self.method_var, _METHODS)
-        row = self._entry_row(
-            panel, row, "Moment (value / Element@CN=value)", self.moment_var
+        ttk.Label(panel, text="Moment (value / Element@CN=value)").grid(
+            row=row, column=0, sticky="w"
         )
+        moment_controls = ttk.Frame(panel)
+        moment_controls.grid(row=row, column=1, sticky="ew", padx=(6, 0), pady=3)
+        moment_controls.columnconfigure(0, weight=1)
+        ttk.Entry(moment_controls, textvariable=self.moment_var).grid(
+            row=0, column=0, sticky="ew"
+        )
+        ttk.Button(
+            moment_controls,
+            text="Suggest",
+            command=self._suggest_coordination_moments,
+        ).grid(row=0, column=1, padx=(4, 0))
+        row += 1
+        ttk.Label(
+            panel,
+            textvariable=self.detected_coordination_var,
+            wraplength=370,
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 3))
+        row += 1
+        ttk.Label(panel, text="Site moment file").grid(row=row, column=0, sticky="w")
+        site_file_controls = ttk.Frame(panel)
+        site_file_controls.grid(row=row, column=1, sticky="ew", padx=(6, 0), pady=3)
+        site_file_controls.columnconfigure(0, weight=1)
+        ttk.Entry(
+            site_file_controls, textvariable=self.site_moment_file_var
+        ).grid(row=0, column=0, sticky="ew")
+        ttk.Button(
+            site_file_controls,
+            text="Browse...",
+            command=self._choose_site_moment_file,
+        ).grid(row=0, column=1, padx=(4, 0))
+        row += 1
         row = self._combo_row(panel, row, "Layer axis", self.axis_var, ["z", "x", "y"])
         row = self._entry_row(
             panel, row, "Layer direction (dx dy dz)", self.layer_direction_var
@@ -508,11 +689,59 @@ class DesktopApp:
         notebook = ttk.Notebook(panel)
         notebook.grid(row=2, column=0, sticky="nsew")
         analysis_frame = ttk.Frame(notebook)
+        sites_frame = ttk.Frame(notebook)
         spin_frame = ttk.Frame(notebook)
         notebook.add(analysis_frame, text="Analysis")
+        notebook.add(sites_frame, text="Sites")
         notebook.add(spin_frame, text="DM.InitSpin")
         self.analysis_text = self._readonly_text(analysis_frame)
         self.spin_text = self._readonly_text(spin_frame)
+        sites_frame.columnconfigure(0, weight=1)
+        sites_frame.rowconfigure(0, weight=1)
+        columns = ("atom", "element", "CN", "sublattice", "sign", "moment")
+        self.sites_tree = ttk.Treeview(
+            sites_frame, columns=columns, show="headings", selectmode="browse"
+        )
+        headings = {
+            "atom": "atom (1-based)",
+            "element": "element",
+            "CN": "CN",
+            "sublattice": "sublattice",
+            "sign": "sign",
+            "moment": "moment (μB)",
+        }
+        widths = {
+            "atom": 105,
+            "element": 80,
+            "CN": 60,
+            "sublattice": 90,
+            "sign": 55,
+            "moment": 100,
+        }
+        for column in columns:
+            self.sites_tree.heading(column, text=headings[column])
+            self.sites_tree.column(
+                column,
+                width=widths[column],
+                minwidth=50,
+                anchor="center",
+                stretch=True,
+            )
+        sites_scrollbar = ttk.Scrollbar(
+            sites_frame, orient="vertical", command=self.sites_tree.yview
+        )
+        self.sites_tree.configure(yscrollcommand=sites_scrollbar.set)
+        self.sites_tree.grid(row=0, column=0, sticky="nsew")
+        sites_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.sites_summary_var = self.tk.StringVar(
+            value="n_up = 0 / n_down = 0 / n_zero = 0, net moment = 0 μB"
+        )
+        ttk.Label(
+            sites_frame,
+            textvariable=self.sites_summary_var,
+            anchor="w",
+            padding=(6, 4),
+        ).grid(row=1, column=0, columnspan=2, sticky="ew")
 
         status = ttk.Label(
             self.root,
@@ -559,6 +788,7 @@ class DesktopApp:
             self.species_var,
             self.method_var,
             self.moment_var,
+            self.site_moment_file_var,
             self.axis_var,
             self.layer_direction_var,
             self.fractional_layers_var,
@@ -601,10 +831,72 @@ class DesktopApp:
         self.viewing_spin_path = None
         self.mode_var.set("generation mode")
         self._reset_camera = True
+        self.detected_coordination_var.set(
+            "detected: click Suggest for by-coordination sites"
+            if self.method_var.get() == "by-coordination"
+            else "detected: -"
+        )
         self.status_var.set(f"Loaded structure: {self.structure_path.name}")
         if schedule:
             self._schedule_live_update()
         return True
+
+    def _choose_site_moment_file(self) -> None:
+        path = self.deps.filedialog.askopenfilename(
+            title="Open site moment CSV",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        )
+        if path:
+            self.site_moment_file_var.set(path)
+
+    def _suggest_coordination_moments(self) -> None:
+        if self.structure_path is None:
+            self.status_var.set("Select a structure before detecting coordination sites.")
+            return
+        if self.method_var.get() != "by-coordination":
+            self.status_var.set("Select the by-coordination method before using Suggest.")
+            return
+
+        def split_words(text: str) -> tuple[str, ...]:
+            return tuple(
+                value for value in text.replace(",", " ").split() if value
+            )
+
+        original_moment = self.moment_var.get()
+        try:
+            structure = read_structure(
+                self.structure_path, slab=self.slab_var.get()
+            )
+            counts = detect_coordination_combinations(
+                structure,
+                split_words(self.species_var.get()),
+                anion_species=split_words(self.anion_species_var.get()) or None,
+                anion_cutoff=self.anion_cutoff_var.get().strip() or "auto",
+                up_coordination=tuple(
+                    int(value)
+                    for value in split_words(self.up_coordination_var.get())
+                ),
+                down_coordination=tuple(
+                    int(value)
+                    for value in split_words(self.down_coordination_var.get())
+                ),
+                coordination_tolerance=int(self.coordination_tolerance_var.get()),
+            )
+        except Exception as exc:
+            self.detected_coordination_var.set("detected: unavailable")
+            self.status_var.set(f"Coordination suggestion unavailable: {exc}")
+            return
+
+        detected = format_detected_coordination(counts)
+        self.detected_coordination_var.set(detected)
+        suggestion = suggested_coordination_moment_text(original_moment, counts)
+        if suggestion is None:
+            self.status_var.set(
+                "Coordination sites detected; existing moment text was preserved."
+            )
+            return
+        self.moment_var.set(suggestion)
+        self.status_var.set("Filled a site-specific moment template; review each value.")
 
     def _collect_params(self) -> GenerationParams:
         if self.structure_path is None:
@@ -672,6 +964,7 @@ class DesktopApp:
             magnetic_species=species,
             method=method,
             moment=self.moment_var.get().strip(),
+            site_moment_file=self.site_moment_file_var.get().strip() or None,
             axis=self.axis_var.get(),
             layer_direction=layer_direction,
             fractional_layers=self.fractional_layers_var.get(),
@@ -773,6 +1066,21 @@ class DesktopApp:
             analysis += "\n\nWarnings:\n" + "\n".join(extra_warnings)
         self._set_text(self.analysis_text, analysis)
         self._set_text(self.spin_text, result.block)
+        self._set_site_table(result)
+        if result.assignment.method == "by-coordination":
+            coordinations = result.assignment.metadata.get("coordination_numbers", {})
+            if isinstance(coordinations, dict):
+                counts = _coordination_combination_counts(
+                    result.structure,
+                    result.magnetic_indices,
+                    coordinations,
+                    params.magnetic_species,
+                )
+            else:
+                counts = {}
+            self.detected_coordination_var.set(format_detected_coordination(counts))
+        else:
+            self.detected_coordination_var.set("detected: -")
         self._replace_figure(figure)
         self._set_exports_enabled(True)
         status = f"Generated {len(result.spins)} magnetic site(s)."
@@ -829,6 +1137,7 @@ class DesktopApp:
             analysis += "\n" + "\n".join(f"WARNING: {w}" for w in loaded.warnings)
         self._set_text(self.analysis_text, analysis)
         self._set_text(self.spin_text, loaded.block)
+        self._set_site_table(loaded)
         self._replace_figure(figure)
         self._set_exports_enabled(True)
         self.status_var.set(f"Viewing spin file: {self.viewing_spin_path.name}")
@@ -891,6 +1200,24 @@ class DesktopApp:
         widget.delete("1.0", "end")
         widget.insert("1.0", value)
         widget.configure(state="disabled")
+
+    def _set_site_table(self, result: GenerationResult | SpinFileResult) -> None:
+        for item in self.sites_tree.get_children():
+            self.sites_tree.delete(item)
+        for row in site_assignment_rows(result):
+            self.sites_tree.insert(
+                "",
+                "end",
+                values=(
+                    row["atom"],
+                    row["element"],
+                    row["CN"],
+                    row["sublattice"],
+                    row["sign"],
+                    f"{float(row['moment']):g}",
+                ),
+            )
+        self.sites_summary_var.set(site_assignment_summary(result))
 
     def _set_exports_enabled(self, enabled: bool) -> None:
         state = "normal" if enabled else "disabled"

@@ -176,23 +176,49 @@ def resolve_moments(
     site_moment_file: str | Path | None = None,
     coordinations: dict[int, int] | None = None,
 ) -> dict[int, float]:
+    """Resolve moment magnitudes while preserving the established return type."""
+
+    moments, _ = resolve_moments_with_sources(
+        structure,
+        magnetic_indices,
+        moment_values,
+        site_moment_file=site_moment_file,
+        coordinations=coordinations,
+    )
+    return moments
+
+
+def resolve_moments_with_sources(
+    structure: Structure,
+    magnetic_indices: Sequence[int],
+    moment_values: Sequence[str] | str,
+    site_moment_file: str | Path | None = None,
+    coordinations: dict[int, int] | None = None,
+) -> tuple[dict[int, float], dict[int, str]]:
+    """Resolve moments and report each atom's matching precedence source."""
+
     global_moment, by_element, by_coordination = parse_moment_arguments(moment_values)
     site_moments = (
         load_site_moments(site_moment_file, structure) if site_moment_file else {}
     )
     result: dict[int, float] = {}
+    sources: dict[int, str] = {}
     for index in magnetic_indices:
         if index in site_moments:
             result[index] = site_moments[index]
+            sources[index] = "site"
         else:
             symbol = structure.symbols[index].lower()
             coordination = coordinations.get(index) if coordinations is not None else None
             if coordination is not None and (symbol, coordination) in by_coordination:
                 result[index] = by_coordination[(symbol, coordination)]
+                sources[index] = "coordination"
             elif symbol in by_element:
                 result[index] = by_element[symbol]
+                sources[index] = "element"
             elif global_moment is not None:
                 result[index] = global_moment
+                sources[index] = "global"
             else:
                 raise ValueError(
                     f"no initial moment specified for magnetic atom {index + 1} "
@@ -200,7 +226,7 @@ def resolve_moments(
                     + (f"@{coordination}" if coordination is not None else "")
                     + ")"
                 )
-    return result
+    return result, sources
 
 
 def guess_oxidation_states(structure: Structure) -> list[float]:

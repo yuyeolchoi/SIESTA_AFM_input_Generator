@@ -10,7 +10,7 @@ from ase.io import read as ase_read
 
 from siesta_afm import gui
 from siesta_afm.fdf_writer import render_dm_init_spin
-from siesta_afm.io import parse_dm_init_spin
+from siesta_afm.io import parse_dm_init_spin, read_structure
 from siesta_afm.structure import Structure
 
 
@@ -48,6 +48,9 @@ def test_generation_controller_runs_without_tk_widgets() -> None:
     assert result.assignment.method == "layer"
     assert result.report["number_of_magnetic_atoms"] == 4
     assert parse_dm_init_spin(result.block)
+    rows = gui.site_assignment_rows(result)
+    assert [row["atom"] for row in rows] == sorted(row["atom"] for row in rows)
+    assert all(row["CN"] == "-" and row["sublattice"] == "-" for row in rows)
 
 
 def test_gui_exposes_generation_methods_and_propagation_preset() -> None:
@@ -109,6 +112,97 @@ def test_gui_controller_runs_inverse_spinel_coordination_method() -> None:
     assert sum(value > 0 for value in result.spins.values()) == 4
     assert sum(value < 0 for value in result.spins.values()) == 2
     assert "inverse spinel" in "\n".join(result.warnings)
+
+
+def test_coordination_site_rows_show_sign_moment_and_zero_spin() -> None:
+    result = gui.run_generation(
+        gui.GenerationParams(
+            structure_path=ROOT / "tests" / "fixtures" / "inverse_spinel_coordination.cif",
+            magnetic_species=("Ni", "Co"),
+            method="by-coordination",
+            moment="Ni@6=2.0 Co@4=2.0 Co@6=0.0",
+            slab=True,
+            anion_species=("O",),
+        )
+    )
+    rows = gui.site_assignment_rows(result)
+    ni_rows = [row for row in rows if row["element"] == "Ni"]
+    co4_rows = [row for row in rows if row["element"] == "Co" and row["CN"] == 4]
+    co6_rows = [row for row in rows if row["element"] == "Co" and row["CN"] == 6]
+    assert len(ni_rows) == len(co4_rows) == len(co6_rows) == 2
+    assert all(
+        row["CN"] == 6
+        and row["sublattice"] == "up"
+        and row["sign"] == "+"
+        and row["moment"] == 2.0
+        for row in ni_rows
+    )
+    assert all(
+        row["sublattice"] == "down"
+        and row["sign"] == "-"
+        and row["moment"] == 2.0
+        for row in co4_rows
+    )
+    assert all(
+        row["sublattice"] == "up"
+        and row["sign"] == "0"
+        and row["moment"] == 0.0
+        for row in co6_rows
+    )
+    assert gui.site_assignment_summary(result) == (
+        "n_up = 2 / n_down = 2 / n_zero = 2, net moment = 0 μB"
+    )
+
+
+def test_detect_coordination_combinations_for_spinel_examples() -> None:
+    inverse = read_structure(
+        ROOT / "tests" / "fixtures" / "inverse_spinel_coordination.cif",
+        slab=True,
+    )
+    assert gui.detect_coordination_combinations(
+        inverse, ("Ni", "Co"), anion_species=("O",)
+    ) == {("Ni", 6): 2, ("Co", 4): 2, ("Co", 6): 2}
+
+    co3o4 = read_structure(ROOT / "examples" / "Co3O4_spinel_COD1538531.cif")
+    assert gui.detect_coordination_combinations(co3o4, ("Co",)) == {
+        ("Co", 4): 8,
+        ("Co", 6): 16,
+    }
+
+
+def test_coordination_template_uses_existing_global_magnitude() -> None:
+    counts = {("Ni", 6): 2, ("Co", 4): 2, ("Co", 6): 2}
+    assert gui.coordination_moment_template(counts, 0.5) == (
+        "Ni@6=0.5 Co@4=0.5 Co@6=0.5"
+    )
+    assert "Ni@6 (2 atoms)" in gui.format_detected_coordination(counts)
+    assert gui.suggested_coordination_moment_text("", counts) == (
+        "Ni@6=1 Co@4=1 Co@6=1"
+    )
+    assert gui.suggested_coordination_moment_text("0.5", counts) == (
+        "Ni@6=0.5 Co@4=0.5 Co@6=0.5"
+    )
+    assert gui.suggested_coordination_moment_text("Co=2", counts) is None
+    assert gui.suggested_coordination_moment_text("Co@4=2 Co@6=0", counts) is None
+    assert gui.suggested_coordination_moment_text("not-a-moment", counts) is None
+
+
+def test_gui_controller_passes_site_moment_csv(tmp_path: Path) -> None:
+    site_file = tmp_path / "site_moments.csv"
+    site_file.write_text("atom_index,element,moment\n1,Ni,3.0\n", encoding="utf-8")
+    result = gui.run_generation(
+        gui.GenerationParams(
+            structure_path=ROOT / "tests" / "fixtures" / "inverse_spinel_coordination.cif",
+            magnetic_species=("Ni", "Co"),
+            method="by-coordination",
+            moment="Ni@6=2.0 Co@4=2.0 Co@6=0.0",
+            site_moment_file=site_file,
+            slab=True,
+            anion_species=("O",),
+        )
+    )
+    assert result.spins[0] == 3.0
+    assert result.spins[1] == 2.0
 
 
 def test_generation_controller_rejects_unknown_species() -> None:
@@ -183,6 +277,10 @@ def test_spin_file_viewer_converts_indices_and_builds_preview_block(
     assert loaded.spins == {0: 0.7, 2: -0.5}
     assert loaded.validation.valid
     assert parse_dm_init_spin(loaded.block) == [(1, 0.7), (3, -0.5)]
+    rows = gui.site_assignment_rows(loaded)
+    assert [row["atom"] for row in rows] == [1, 3]
+    assert all(row["CN"] == "-" and row["sublattice"] == "-" for row in rows)
+    assert gui.site_assignment_summary(loaded).startswith("n_up = 1 / n_down = 1")
 
 
 def test_export_patched_input_is_idempotent_and_preserves_base(tmp_path: Path) -> None:

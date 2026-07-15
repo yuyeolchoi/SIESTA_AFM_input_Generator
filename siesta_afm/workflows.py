@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from typing import Sequence
 
-from .magnetic_sites import parse_atom_indices, resolve_moments, select_magnetic_sites
+from .magnetic_sites import (
+    parse_atom_indices,
+    resolve_moments,
+    resolve_moments_with_sources,
+    select_magnetic_sites,
+)
 from .ordering import (
     SpinAssignment,
     alternating_index,
@@ -188,11 +193,51 @@ def generate_assignment(
         else None
     )
     if resolved_magnitudes is None:
-        resolved_magnitudes = resolve_moments(
-            structure,
-            indices,
-            moment,
-            site_moment_file=site_moment_file,
-            coordinations=coordinations if isinstance(coordinations, dict) else None,
-        )
+        if method == "by-coordination" and isinstance(coordinations, dict):
+            resolved_magnitudes, moment_sources = resolve_moments_with_sources(
+                structure,
+                indices,
+                moment,
+                site_moment_file=site_moment_file,
+                coordinations=coordinations,
+            )
+            cn_by_element: dict[str, set[int]] = {}
+            display_names: dict[str, str] = {}
+            for index in indices:
+                symbol = structure.symbols[index]
+                normalized = symbol.lower()
+                display_names.setdefault(normalized, symbol)
+                cn_by_element.setdefault(normalized, set()).add(coordinations[index])
+            for element, coordination_values in cn_by_element.items():
+                if len(coordination_values) < 2 or not any(
+                    moment_sources[index] in {"element", "global"}
+                    for index in indices
+                    if structure.symbols[index].lower() == element
+                ):
+                    continue
+                display = display_names[element]
+                ordered = sorted(coordination_values)
+                sites = " and ".join(f"CN={value}" for value in ordered)
+                specifications = " and ".join(
+                    f"{display}@{value}=..." for value in ordered
+                )
+                qualifier = "both " if len(ordered) == 2 else ""
+                sublattices = (
+                    "the two sublattices" if len(ordered) == 2 else "the sites"
+                )
+                assignment.warnings.append(
+                    f"element {display} occupies {qualifier}{sites} sites but its initial "
+                    "moment was taken from a single value; use "
+                    f"{specifications} to set {sublattices} independently"
+                )
+        else:
+            resolved_magnitudes = resolve_moments(
+                structure,
+                indices,
+                moment,
+                site_moment_file=site_moment_file,
+                coordinations=(
+                    coordinations if isinstance(coordinations, dict) else None
+                ),
+            )
     return indices, assignment, assignment.moments(resolved_magnitudes)
