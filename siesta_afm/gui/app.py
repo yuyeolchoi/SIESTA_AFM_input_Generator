@@ -15,6 +15,7 @@ from .controllers import (
     GenerationResult,
     MagnetizationRow,
     SpinFileResult,
+    _AUTO_SHOW_BONDS_MAX_ATOMS,
     _AUTO_SHOW_INDICES_MAX_ATOMS,
     _BATCH_METHODS,
     _CANDIDATE_COLUMNS,
@@ -26,6 +27,7 @@ from .controllers import (
     _PANE_SASH_MARGIN,
     _RESULT_COLUMNS,
     _RESULTS_NOTEBOOK_MIN_HEIGHT,
+    _element_counts,
     _split_words,
     batch_moment_text_from_rows,
     candidate_table_rows,
@@ -37,6 +39,7 @@ from .controllers import (
     export_patched_input,
     export_spin_block,
     export_structure_with_moments,
+    load_spin_file,
     magnetic_species_from_rows,
     moment_text_from_rows,
     prepare_job_folders,
@@ -131,6 +134,8 @@ class DesktopApp:
         self._cell_editor: Any | None = None
         self.control_inputs: list[Any] = []
         self.method_option_frames: dict[str, Any] = {}
+        self.spin_element_vars: dict[str, Any] = {}
+        self.spin_element_checkbuttons: dict[str, Any] = {}
         self._coordination_fallback: str | None = None
         self._coordination_use_note: str | None = None
         self._pane_width_initialized = False
@@ -183,6 +188,8 @@ class DesktopApp:
         self.seed_var = tk.StringVar(value="0")
         self.color_mode_var = tk.StringVar(value="spin sign")
         self.show_atom_indices_var = tk.BooleanVar(value=True)
+        self.show_bonds_var = tk.BooleanVar(value=False)
+        self.bond_radius_scale_var = tk.StringVar(value="1.0")
         self.live_update_var = tk.BooleanVar(value=True)
         self.mode_var = tk.StringVar(value="generation mode")
         self.status_var = tk.StringVar(value="Select a structure file to begin.")
@@ -673,12 +680,45 @@ class DesktopApp:
         self.results_pane.add(preview, weight=3)
         preview.columnconfigure(0, weight=1)
         preview.rowconfigure(1, weight=1)
+        preview_controls = ttk.Frame(preview)
+        preview_controls.grid(row=0, column=0, sticky="ew")
         ttk.Checkbutton(
-            preview,
+            preview_controls,
             text="Show atom indices",
             variable=self.show_atom_indices_var,
             command=self._show_atom_indices_changed,
         ).grid(row=0, column=0, sticky="w", padx=2, pady=(0, 3))
+        ttk.Checkbutton(
+            preview_controls,
+            text="Show bonds",
+            variable=self.show_bonds_var,
+            command=self._preview_display_options_changed,
+        ).grid(row=0, column=1, sticky="w", padx=(10, 2), pady=(0, 3))
+        ttk.Label(preview_controls, text="Bond radius scale").grid(
+            row=0, column=2, sticky="e", padx=(10, 2), pady=(0, 3)
+        )
+        self.bond_radius_scale_spinbox = self.ttk.Spinbox(
+            preview_controls,
+            from_=0.1,
+            to=5.0,
+            increment=0.1,
+            width=5,
+            textvariable=self.bond_radius_scale_var,
+            command=self._preview_display_options_changed,
+        )
+        self.bond_radius_scale_spinbox.grid(
+            row=0, column=3, sticky="w", padx=2, pady=(0, 3)
+        )
+        self.bond_radius_scale_spinbox.bind(
+            "<Return>", lambda _event: self._preview_display_options_changed()
+        )
+        self.bond_radius_scale_spinbox.bind(
+            "<FocusOut>", lambda _event: self._preview_display_options_changed()
+        )
+        self.spin_elements_frame = ttk.Frame(preview_controls)
+        self.spin_elements_frame.grid(
+            row=1, column=0, columnspan=4, sticky="w", padx=2, pady=(0, 3)
+        )
         self.canvas_host = ttk.Frame(preview)
         self.canvas_host.grid(row=1, column=0, sticky="nsew")
         self.toolbar_host = ttk.Frame(preview)
@@ -1382,6 +1422,51 @@ class DesktopApp:
             len(structure.symbols) <= _AUTO_SHOW_INDICES_MAX_ATOMS
         )
 
+    def _reset_show_bonds_for_structure(self, structure: Structure) -> None:
+        self.show_bonds_var.set(
+            len(structure.symbols) <= _AUTO_SHOW_BONDS_MAX_ATOMS
+        )
+
+    def _reset_spin_elements_for_structure(self, structure: Structure) -> None:
+        for widget in self.spin_elements_frame.winfo_children():
+            widget.destroy()
+        self.spin_element_vars.clear()
+        self.spin_element_checkbuttons.clear()
+        self.ttk.Label(self.spin_elements_frame, text="Show spin for").grid(
+            row=0, column=0, sticky="w"
+        )
+        for column, element in enumerate(_element_counts(structure), start=1):
+            variable = self.tk.BooleanVar(value=True)
+            checkbutton = self.ttk.Checkbutton(
+                self.spin_elements_frame,
+                text=element,
+                variable=variable,
+                command=self._preview_display_options_changed,
+            )
+            checkbutton.grid(row=0, column=column, sticky="w", padx=(6, 0))
+            self.spin_element_vars[element] = variable
+            self.spin_element_checkbuttons[element] = checkbutton
+
+    def _preview_display_kwargs(self) -> dict[str, object]:
+        show_bonds = self.show_bonds_var.get()
+        visible_spin_elements = (
+            {
+                element
+                for element, variable in self.spin_element_vars.items()
+                if variable.get()
+            }
+            if self.spin_element_vars
+            else None
+        )
+        return {
+            "show_indices": self.show_atom_indices_var.get(),
+            "visible_spin_elements": visible_spin_elements,
+            "show_bonds": show_bonds,
+            "bond_radius_scale": (
+                float(self.bond_radius_scale_var.get()) if show_bonds else 1.0
+            ),
+        }
+
     def _run_table_refresh(self) -> None:
         self._table_after_id = None
         self._refresh_magnetization_table()
@@ -1427,6 +1512,8 @@ class DesktopApp:
         self.structure_path = candidate
         self.current_structure = structure
         self._reset_show_indices_for_structure(structure)
+        self._reset_show_bonds_for_structure(structure)
+        self._reset_spin_elements_for_structure(structure)
         self._coordination_use_note = None
         self.file_var.set(str(self.structure_path))
         self.viewing_spin_path = None
@@ -1714,8 +1801,8 @@ class DesktopApp:
             figure = create_spin_figure(
                 result.structure,
                 result.spins,
-                show_indices=self.show_atom_indices_var.get(),
                 color_mode=params.color_mode,
+                **self._preview_display_kwargs(),
             )
             self._restore_camera(figure, camera)
         except Exception as exc:
@@ -1779,8 +1866,8 @@ class DesktopApp:
             figure = create_spin_figure(
                 structure,
                 loaded.spins,
-                show_indices=self.show_atom_indices_var.get(),
                 color_mode=_COLOR_MODES[self.color_mode_var.get()],
+                **self._preview_display_kwargs(),
             )
             self._restore_camera(figure, camera)
         except Exception as exc:
@@ -1806,6 +1893,9 @@ class DesktopApp:
         self.status_var.set(f"Viewing spin file: {self.viewing_spin_path.name}")
 
     def _show_atom_indices_changed(self) -> None:
+        self._preview_display_options_changed()
+
+    def _preview_display_options_changed(self) -> None:
         if (
             self.current_structure is None
             or self.current_result is None
@@ -1818,8 +1908,8 @@ class DesktopApp:
             figure = create_spin_figure(
                 self.current_structure,
                 self.current_spins,
-                show_indices=self.show_atom_indices_var.get(),
                 color_mode=_COLOR_MODES[self.color_mode_var.get()],
+                **self._preview_display_kwargs(),
             )
             self._restore_camera(figure, camera)
             self._replace_figure(figure)

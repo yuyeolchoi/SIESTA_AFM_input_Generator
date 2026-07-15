@@ -18,6 +18,7 @@ from .controllers import (
     MagnetizationRow,
     ResultTableRow,
     SpinFileResult,
+    _AUTO_SHOW_BONDS_MAX_ATOMS,
     _AUTO_SHOW_INDICES_MAX_ATOMS,
     _BATCH_METHODS,
     _CANDIDATE_COLUMNS,

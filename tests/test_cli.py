@@ -245,6 +245,37 @@ def test_plot_value_color_mode_and_sign_color_warning(
     assert "ignored in value color mode" in captured.err
 
 
+def test_plot_filters_spin_elements_and_draws_bonds(tmp_path: Path) -> None:
+    pytest.importorskip("matplotlib")
+    spin_file = tmp_path / "nio_spins.fdf"
+    spin_file.write_text(
+        "%block DM.InitSpin\n  1  1.0\n  2 -1.0\n%endblock DM.InitSpin\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "nio_filtered_bonds.png"
+
+    assert (
+        main(
+            [
+                "plot",
+                str(ROOT / "examples" / "NiO_111_slab.cif"),
+                "--spin-file",
+                str(spin_file),
+                "--output",
+                str(output),
+                "--filter-elements",
+                "Ni",
+                "--show-bonds",
+                "--bond-radius-scale",
+                "1.1",
+            ]
+        )
+        == 0
+    )
+    assert output.is_file()
+    assert output.stat().st_size > 0
+
+
 def test_q_vector_and_afm_type_are_mutually_exclusive() -> None:
     parser = build_parser()
     with pytest.raises(SystemExit):

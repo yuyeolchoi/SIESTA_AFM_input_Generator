@@ -6,6 +6,7 @@ from siesta_afm.neighbors import (
     automatic_cutoff,
     build_neighbor_graph,
     count_anion_neighbors,
+    detect_bonds,
     minimum_image_vector,
     resolve_first_shell,
 )
@@ -19,6 +20,35 @@ def structure(points, cell=None, pbc=(False, False, False)) -> Structure:
         np.asarray(cell if cell is not None else np.eye(3) * 20.0),
         pbc,
     )
+
+
+def test_detect_bonds_uses_ase_natural_cutoffs_and_radius_scale() -> None:
+    dimer = Structure(
+        ["H", "H"],
+        [[0, 0, 0], [0.7, 0, 0]],
+        np.eye(3) * 5.0,
+        (False, False, False),
+    )
+    assert detect_bonds(dimer) == [(0, 1)]
+    assert detect_bonds(dimer, radius_scale=0.1) == []
+
+    separated = Structure(
+        ["H", "H"],
+        [[0, 0, 0], [3.0, 0, 0]],
+        np.eye(3) * 5.0,
+        (False, False, False),
+    )
+    assert detect_bonds(separated) == []
+
+
+def test_detect_bonds_omits_periodic_image_bonds() -> None:
+    across_boundary = Structure(
+        ["H", "H"],
+        [[0.1, 0, 0], [3.9, 0, 0]],
+        np.eye(3) * 4.0,
+        (True, False, False),
+    )
+    assert detect_bonds(across_boundary) == []
 
 
 def test_one_dimensional_chain_is_bipartite() -> None:

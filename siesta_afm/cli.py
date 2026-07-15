@@ -304,6 +304,22 @@ def build_parser() -> argparse.ArgumentParser:
     plot.add_argument("--show-indices", action="store_true")
     plot.add_argument("--color-by-layer", action="store_true")
     plot.add_argument(
+        "--filter-elements",
+        nargs="+",
+        help="show spin colors/arrows only for these elements",
+    )
+    plot.add_argument(
+        "--show-bonds",
+        action="store_true",
+        help="draw covalent-radius bonds contained within the displayed cell",
+    )
+    plot.add_argument(
+        "--bond-radius-scale",
+        type=float,
+        default=1.0,
+        help="multiplier for ASE natural covalent-radius bond cutoffs (default: 1.0)",
+    )
+    plot.add_argument(
         "--color-mode",
         choices=["sign", "value"],
         default="sign",
@@ -606,6 +622,11 @@ def _cmd_plot(args: argparse.Namespace) -> int:
         up_color=args.up_color or "tab:red",
         down_color=args.down_color or "tab:blue",
         nonmagnetic_color=args.nonmagnetic_color,
+        visible_spin_elements=(
+            set(args.filter_elements) if args.filter_elements is not None else None
+        ),
+        show_bonds=args.show_bonds,
+        bond_radius_scale=args.bond_radius_scale,
     )
     print(destination)
     return 0

@@ -21,6 +21,16 @@ def test_zero_spin_is_classified_as_nonmagnetic() -> None:
     assert down == [2]
 
 
+def test_spin_element_filter_keeps_hidden_elements_as_nonmagnetic() -> None:
+    structure = Structure(
+        ["Ni", "Co", "O"], np.zeros((3, 3)), np.eye(3), (False, False, False)
+    )
+    spins = {0: 1.0, 1: -4.0, 2: 0.5}
+
+    assert classify_spin_indices(structure, spins, {"Ni"}) == ([1, 2], [0], [])
+    assert classify_spin_indices(structure, spins, None) == ([], [0, 2], [1])
+
+
 def test_plot_with_explicit_zero_spin_writes_png(tmp_path: Path) -> None:
     pytest.importorskip("matplotlib")
     structure = Structure(
@@ -94,4 +104,30 @@ def test_create_spin_figure_returns_embeddable_figure_with_value_colorbar() -> N
     figure = create_spin_figure(structure, {0: 0.7, 1: -0.5}, color_mode="value")
     assert len(figure.axes) == 2
     assert figure.axes[1].get_ylabel() == "initial spin (μB)"
+    figure.clear()
+
+
+def test_value_color_scale_uses_only_visible_spin_elements() -> None:
+    pytest.importorskip("matplotlib")
+    structure = Structure(
+        ["Ni", "Co"], [[0, 0, 0], [1, 0, 0]], np.eye(3), (False, False, False)
+    )
+    figure = create_spin_figure(
+        structure,
+        {0: 1.0, 1: -10.0},
+        color_mode="value",
+        visible_spin_elements={"Ni"},
+    )
+    assert figure.axes[1].get_ylim() == pytest.approx((-1.0, 1.0))
+    figure.clear()
+
+
+def test_create_spin_figure_draws_detected_bonds() -> None:
+    pytest.importorskip("matplotlib")
+    structure = Structure(
+        ["H", "H"], [[0, 0, 0], [0.7, 0, 0]], np.eye(3) * 5, (False,) * 3
+    )
+    figure = create_spin_figure(structure, {}, show_bonds=True)
+    assert len(figure.axes[0].lines) == 1
+    assert figure.axes[0].lines[0].get_color() == "0.5"
     figure.clear()

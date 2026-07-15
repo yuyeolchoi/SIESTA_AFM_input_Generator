@@ -9,28 +9,52 @@ import numpy as np
 from ase import Atoms
 from ase.io import write as ase_write
 
+from .neighbors import detect_bonds
 from .structure import Structure
 
 
 def classify_spin_indices(
-    structure: Structure, spins: Mapping[int, float]
+    structure: Structure,
+    spins: Mapping[int, float],
+    visible_spin_elements: set[str] | None = None,
 ) -> tuple[list[int], list[int], list[int]]:
     """Return nonmagnetic/zero, spin-up, and spin-down atom indices."""
 
     nonmagnetic = [
         index
         for index in range(len(structure))
-        if index not in spins or np.isclose(spins[index], 0.0)
+        if (
+            index not in spins
+            or np.isclose(spins[index], 0.0)
+            or (
+                visible_spin_elements is not None
+                and structure.symbols[index] not in visible_spin_elements
+            )
+        )
     ]
     up = [
         index
         for index, value in spins.items()
-        if value > 0 and 0 <= index < len(structure)
+        if (
+            value > 0
+            and 0 <= index < len(structure)
+            and (
+                visible_spin_elements is None
+                or structure.symbols[index] in visible_spin_elements
+            )
+        )
     ]
     down = [
         index
         for index, value in spins.items()
-        if value < 0 and 0 <= index < len(structure)
+        if (
+            value < 0
+            and 0 <= index < len(structure)
+            and (
+                visible_spin_elements is None
+                or structure.symbols[index] in visible_spin_elements
+            )
+        )
     ]
     return nonmagnetic, up, down
 
@@ -46,6 +70,9 @@ def plot_spin_pattern(
     up_color: str = "tab:red",
     down_color: str = "tab:blue",
     nonmagnetic_color: str = "0.65",
+    visible_spin_elements: set[str] | None = None,
+    show_bonds: bool = False,
+    bond_radius_scale: float = 1.0,
 ) -> Path:
     """Write a PNG/SVG plot or an XYZ/CIF structure with magmom metadata."""
 
@@ -82,6 +109,9 @@ def plot_spin_pattern(
         up_color=up_color,
         down_color=down_color,
         nonmagnetic_color=nonmagnetic_color,
+        visible_spin_elements=visible_spin_elements,
+        show_bonds=show_bonds,
+        bond_radius_scale=bond_radius_scale,
     )
     try:
         fig.savefig(destination, dpi=180)
@@ -100,6 +130,9 @@ def create_spin_figure(
     up_color: str = "tab:red",
     down_color: str = "tab:blue",
     nonmagnetic_color: str = "0.65",
+    visible_spin_elements: set[str] | None = None,
+    show_bonds: bool = False,
+    bond_radius_scale: float = 1.0,
 ) -> Any:
     """Build and return a backend-neutral matplotlib Figure for a spin pattern."""
 
@@ -117,7 +150,22 @@ def create_spin_figure(
 
     fig = Figure(figsize=(8, 7))
     ax = fig.add_subplot(111, projection="3d")
-    nonmagnetic, up_indices, down_indices = classify_spin_indices(structure, spins)
+    if show_bonds:
+        for left, right in detect_bonds(
+            structure, radius_scale=bond_radius_scale
+        ):
+            positions = structure.positions[[left, right]]
+            ax.plot(
+                positions[:, 0],
+                positions[:, 1],
+                positions[:, 2],
+                color="0.5",
+                linewidth=0.8,
+                zorder=1,
+            )
+    nonmagnetic, up_indices, down_indices = classify_spin_indices(
+        structure, spins, visible_spin_elements
+    )
     if nonmagnetic:
         pos = structure.positions[nonmagnetic]
         ax.scatter(
@@ -128,6 +176,7 @@ def create_spin_figure(
             c=nonmagnetic_color,
             alpha=0.65,
             label="nonmagnetic",
+            zorder=2,
         )
     if color_mode == "sign":
         for sign, selected, color, label in (
@@ -137,7 +186,15 @@ def create_spin_figure(
             if not selected:
                 continue
             pos = structure.positions[selected]
-            ax.scatter(pos[:, 0], pos[:, 1], pos[:, 2], s=42, c=color, label=label)
+            ax.scatter(
+                pos[:, 0],
+                pos[:, 1],
+                pos[:, 2],
+                s=42,
+                c=color,
+                label=label,
+                zorder=2,
+            )
             dz = np.full(len(selected), 0.45 * sign)
             ax.quiver(
                 pos[:, 0],
@@ -149,6 +206,7 @@ def create_spin_figure(
                 color=color,
                 arrow_length_ratio=0.35,
                 linewidth=1.2,
+                zorder=3,
             )
     else:
         selected = sorted([*up_indices, *down_indices])
@@ -168,6 +226,7 @@ def create_spin_figure(
                 s=42,
                 c=colors,
                 label="magnetic",
+                zorder=2,
             )
             for position, value, color in zip(pos, values, colors, strict=True):
                 ax.quiver(
@@ -178,6 +237,7 @@ def create_spin_figure(
                     color=color,
                     arrow_length_ratio=0.35,
                     linewidth=1.2,
+                    zorder=3,
                 )
         scalar_mappable = matplotlib.cm.ScalarMappable(norm=norm, cmap=cmap)
         scalar_mappable.set_array([])

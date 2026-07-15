@@ -9,6 +9,8 @@ from typing import Sequence
 
 import networkx as nx
 import numpy as np
+from ase import Atoms
+from ase.neighborlist import NeighborList, natural_cutoffs
 
 from .structure import Structure
 
@@ -19,6 +21,40 @@ class PairDistance:
     j: int
     distance: float
     vector: np.ndarray
+
+
+def detect_bonds(
+    structure: Structure, *, radius_scale: float = 1.0
+) -> list[tuple[int, int]]:
+    """Return covalent-radius bond pairs contained within the displayed cell.
+
+    ASE's natural covalent-radius cutoffs define the bonds.  Neighbors whose
+    offset crosses a periodic cell boundary are intentionally omitted because
+    the preview does not draw replicated or clipped periodic-image bonds.
+    """
+
+    radius_scale = float(radius_scale)
+    if not np.isfinite(radius_scale) or radius_scale <= 0:
+        raise ValueError("bond radius scale must be positive")
+    atoms = Atoms(
+        structure.symbols,
+        positions=structure.positions,
+        cell=structure.cell,
+        pbc=structure.pbc,
+    )
+    neighbor_list = NeighborList(
+        natural_cutoffs(atoms, mult=radius_scale),
+        self_interaction=False,
+        bothways=True,
+    )
+    neighbor_list.update(atoms)
+    bonds: set[tuple[int, int]] = set()
+    for index in range(len(structure)):
+        neighbors, offsets = neighbor_list.get_neighbors(index)
+        for neighbor, offset in zip(neighbors, offsets, strict=True):
+            if np.all(offset == 0):
+                bonds.add(tuple(sorted((index, int(neighbor)))))
+    return sorted(bonds)
 
 
 def classify_coordination_geometry(

@@ -690,6 +690,72 @@ def test_atom_index_default_tracks_each_new_structure(
         root.destroy()
 
 
+def test_element_spin_checkboxes_rerender_with_real_tk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dependencies = gui._load_gui_dependencies()
+    try:
+        root = dependencies.tk.Tk()
+    except dependencies.tk.TclError:
+        pytest.skip("Tk display is unavailable")
+    app = None
+    try:
+        try:
+            root.attributes("-alpha", 0.0)
+        except dependencies.tk.TclError:
+            pass
+        app = gui.DesktopApp(root, dependencies)
+        app.live_update_var.set(False)
+        monkeypatch.setattr(
+            app.deps.filedialog,
+            "askopenfilename",
+            lambda **_kwargs: str(ROOT / "examples" / "CuO_bulk.cif"),
+        )
+        assert app._choose_structure(schedule=False)
+        root.update()
+
+        assert set(app.spin_element_checkbuttons) == {"Cu", "O"}
+        assert all(
+            widget.winfo_ismapped()
+            for widget in app.spin_element_checkbuttons.values()
+        )
+        assert app.show_bonds_var.get() is True
+
+        generated = gui.run_generation(
+            gui.GenerationParams(
+                structure_path=ROOT / "examples" / "CuO_bulk.cif",
+                magnetic_species=("Cu",),
+                method="layer",
+                moment="0.5",
+            )
+        )
+        app.current_result = generated
+        app.current_structure = generated.structure
+        app.current_spins = generated.spins
+
+        from siesta_afm.gui import app as gui_app
+
+        original = gui_app.create_spin_figure
+        visible_calls: list[set[str] | None] = []
+
+        def record_create(*args: object, **kwargs: object) -> object:
+            visible_calls.append(kwargs.get("visible_spin_elements"))  # type: ignore[arg-type]
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(gui_app, "create_spin_figure", record_create)
+        app.spin_element_checkbuttons["Cu"].invoke()
+        root.update()
+
+        assert app.spin_element_vars["Cu"].get() is False
+        assert visible_calls == [{"O"}]
+        assert app.figure is not None
+        assert app.spin_element_checkbuttons["Cu"].winfo_ismapped()
+    finally:
+        if app is not None and app.figure is not None:
+            app.figure.clear()
+        root.destroy()
+
+
 def test_gui_controller_passes_site_moment_csv(tmp_path: Path) -> None:
     site_file = tmp_path / "site_moments.csv"
     site_file.write_text("atom_index,element,moment\n1,Ni,3.0\n", encoding="utf-8")

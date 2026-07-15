@@ -46,6 +46,12 @@ siesta-afm plot examples/CuO_111_slab.cif \
 
 By default `plot` shows the spin sign in red/blue. To compare different site moments on a continuous color scale, use `--color-mode value`. That mode adds a zero-centered symmetric color range and an `initial spin (μB)` colorbar, and `--up-color` / `--down-color` are ignored.
 
+Use `--filter-elements Ni Co` to show spin colors and arrows only for selected
+elements; all other atoms remain visible as gray nonmagnetic markers. Add
+`--show-bonds` to draw ASE covalent-radius bonds and adjust their detection with
+`--bond-radius-scale` (default `1.0`). Bonds that cross a periodic cell boundary
+are not displayed.
+
 To insert the result into an existing SIESTA input:
 
 ```bash
@@ -405,7 +411,10 @@ output feature as CLI `--no-site-comments`; default-moment and spin-state warnin
 appear in both the status bar and `Analysis` tab. Existing spin files can also be
 opened on top of the current structure. The preview shows atom indices automatically
 for structures with at most 60 atoms and hides them for larger structures; `Show atom
-indices` can override that choice for the currently loaded structure.
+indices` can override that choice for the currently loaded structure. The preview also
+provides one spin-visibility checkbox per element plus `Show bonds` and a bond-radius
+scale. Unchecking an element hides only its spin color and arrow, not its atom marker;
+bond display is enabled by default only for structures with at most 60 atoms.
 
 After generation, the `Sites` tab lists every magnetic atom in input order with its
 element, CN, sublattice, sign, and moment. Its footer shows `n_up`, `n_down`,
