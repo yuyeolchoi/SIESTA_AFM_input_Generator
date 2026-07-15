@@ -453,7 +453,7 @@ No input is ever sorted by element or by coordinate. The internal `ase_index` is
 6. Multiple AFM/FM initial states should be computed and compared by final total energy.
 7. The magnetic ground state can depend on the U value, basis, pseudopotential, and slab termination.
 
-The small structures in `examples/` are for confirming CLI behavior and do not substitute for a converged surface-calculation model. In particular, `NiCo2O4_311_slab.cif` is a multi-element input/output demo, not a real spinel structure with constructed Td/Oh coordination, so it must not be used as a `by-coordination` validation model.
+The small structures in `examples/` are for confirming CLI behavior and do not substitute for a converged surface-calculation model. In particular, `NiCo2O4_311_slab.cif` is a multi-element input/output demo, not a real spinel structure with constructed Td/Oh coordination, so it must not be used as a `by-coordination` validation model; its Ni/Co-O distances intentionally exceed typical covalent-bond cutoffs, so `--show-bonds`/`Show bonds` will find few or no bonds on it. To try the element filter and bond lines on a physically realistic multi-element structure, use `examples/NiCo2O4_spinel_demo.cif` instead (the real Co3O4 spinel geometry from COD 1538531 with its eight tetrahedral Co sites relabeled Ni).
 
 ## Tests
 
