@@ -520,6 +520,75 @@ def test_axis_alone_without_layer_direction_still_parses() -> None:
     assert _workflow_kwargs(args)["axis"] == "x"
 
 
+def test_layer_per_species_cli_generates_independent_stacks(
+    tmp_path: Path,
+) -> None:
+    structure = tmp_path / "alternating_species.xyz"
+    structure.write_text(
+        "4\ninterleaved Ni and Co layers\n"
+        "Ni 0 0 0\n"
+        "Co 0 1 0\n"
+        "Ni 0 2 0\n"
+        "Co 0 3 0\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "per_species.fdf"
+    assert (
+        main(
+            [
+                "generate",
+                str(structure),
+                "--magnetic-species",
+                "Ni",
+                "Co",
+                "--method",
+                "layer",
+                "--axis",
+                "y",
+                "--layer-per-species",
+                "--moment",
+                "1",
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    assert parse_dm_init_spin(output) == [
+        (1, 1.0),
+        (2, 1.0),
+        (3, -1.0),
+        (4, -1.0),
+    ]
+
+
+def test_layer_per_species_cli_rejects_non_layer_method(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    structure = tmp_path / "two_atoms.xyz"
+    structure.write_text(
+        "2\ntwo Ni atoms\nNi 0 0 0\nNi 0 0 1\n",
+        encoding="utf-8",
+    )
+    code = main(
+        [
+            "generate",
+            str(structure),
+            "--magnetic-species",
+            "Ni",
+            "--method",
+            "alternating-index",
+            "--layer-per-species",
+            "--moment",
+            "1",
+        ]
+    )
+    assert code == 2
+    assert (
+        "--layer-per-species requires --method layer" in capsys.readouterr().err
+    )
+
+
 def _write_triangle_xyz(path: Path) -> None:
     root3 = 3.0**0.5
     path.write_text(

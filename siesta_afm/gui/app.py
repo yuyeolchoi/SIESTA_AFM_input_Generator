@@ -188,6 +188,7 @@ class DesktopApp:
         self.axis_var = tk.StringVar(value="z")
         self.layer_direction_var = tk.StringVar(value="")
         self.fractional_layers_var = tk.BooleanVar(value=False)
+        self.layer_per_species_var = tk.BooleanVar(value=False)
         self.auto_cutoff_var = tk.BooleanVar(value=True)
         self.cutoff_var = tk.StringVar(value="3.2")
         self.tolerance_var = tk.StringVar(value="0.25")
@@ -369,6 +370,12 @@ class DesktopApp:
             layer_frame,
             text="Fractional layer coordinates",
             variable=self.fractional_layers_var,
+        ).grid(row=option_row, column=0, columnspan=2, sticky="w", pady=3)
+        option_row += 1
+        ttk.Checkbutton(
+            layer_frame,
+            text="Alternate layers independently per species",
+            variable=self.layer_per_species_var,
         ).grid(row=option_row, column=0, columnspan=2, sticky="w", pady=3)
         option_row += 1
         option_row = self._entry_row(
@@ -1608,6 +1615,7 @@ class DesktopApp:
             self.axis_var,
             self.layer_direction_var,
             self.fractional_layers_var,
+            self.layer_per_species_var,
             self.auto_cutoff_var,
             self.cutoff_var,
             self.tolerance_var,
@@ -1956,6 +1964,7 @@ class DesktopApp:
             layer_direction=self.layer_direction_var.get(),
             layer_tolerance=self.tolerance_var.get(),
             fractional_layers=self.fractional_layers_var.get(),
+            layer_per_species=self.layer_per_species_var.get(),
             auto_cutoff=self.auto_cutoff_var.get(),
             cutoff=self.cutoff_var.get(),
             allow_frustrated=self.allow_frustrated_var.get(),

@@ -139,8 +139,11 @@ and [Materials Project U-value methodology](https://docs.materialsproject.org/me
 are selected. If one element occurs only on the even- or odd-parity layers of
 that combined stack, every atom of that element can receive the same sign even
 though the other element alternates normally. The program warns when this
-happens. For multi-species spinel ferrimagnets, prefer `by-coordination`; run
-species separately only when independent layer patterns are physically intended.
+happens. Pass `--layer-per-species` to build and alternate an independent
+coordinate stack for each element; the flag is valid only with `--method layer`
+and also applies to `--layer-direction`. The default remains the combined stack.
+For multi-species spinel ferrimagnets, prefer `by-coordination`; use independent
+element stacks only when those layer patterns are physically intended.
 
 Examples:
 

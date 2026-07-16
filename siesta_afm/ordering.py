@@ -409,6 +409,34 @@ def _detect_layers_with_metadata(
     return [[index for _, index in layer] for layer in layers], wrapped_layer_merged
 
 
+def _group_indices_by_species(
+    structure: Structure, indices: Sequence[int]
+) -> list[tuple[str, list[int]]]:
+    """Group selected atom indices by element without changing their order."""
+
+    grouped: dict[str, list[int]] = {}
+    display_names: dict[str, str] = {}
+    for index in indices:
+        symbol = structure.symbols[index]
+        normalized = symbol.lower()
+        display_names.setdefault(normalized, symbol)
+        grouped.setdefault(normalized, []).append(index)
+    return [(display_names[key], grouped[key]) for key in grouped]
+
+
+def _combined_species_layer_counts(
+    layers: Sequence[Sequence[int]],
+    species_groups: Sequence[tuple[str, Sequence[int]]],
+) -> dict[str, int]:
+    """Count combined-stack layers occupied by each selected element."""
+
+    counts: dict[str, int] = {}
+    for symbol, species_indices in species_groups:
+        selected = set(species_indices)
+        counts[symbol] = sum(bool(selected.intersection(layer)) for layer in layers)
+    return counts
+
+
 def layer_ordering(
     structure: Structure,
     indices: Sequence[int],
@@ -416,40 +444,90 @@ def layer_ordering(
     axis: str = "z",
     tolerance: float = 0.25,
     fractional: bool = False,
+    per_species: bool = False,
 ) -> SpinAssignment:
     layers, wrapped_layer_merged = _detect_layers_with_metadata(
         structure, indices, axis, tolerance, fractional=fractional
     )
-    signs = {
-        index: 1 if layer_number % 2 == 0 else -1
-        for layer_number, layer in enumerate(layers)
-        for index in layer
-    }
+    species_groups = _group_indices_by_species(structure, indices)
+    species_layers: dict[str, list[list[int]]] = {}
+    species_wrapped_layer_merged: dict[str, bool] = {}
+    if per_species:
+        signs: dict[int, int] = {}
+        for symbol, species_indices in species_groups:
+            stack, stack_wrapped_layer_merged = _detect_layers_with_metadata(
+                structure,
+                species_indices,
+                axis,
+                tolerance,
+                fractional=fractional,
+            )
+            species_layers[symbol] = stack
+            species_wrapped_layer_merged[symbol] = stack_wrapped_layer_merged
+            signs.update(
+                {
+                    index: 1 if layer_number % 2 == 0 else -1
+                    for layer_number, layer in enumerate(stack)
+                    for index in layer
+                }
+            )
+        species_layer_counts = {
+            symbol: len(stack) for symbol, stack in species_layers.items()
+        }
+    else:
+        signs = {
+            index: 1 if layer_number % 2 == 0 else -1
+            for layer_number, layer in enumerate(layers)
+            for index in layer
+        }
+        species_layer_counts = _combined_species_layer_counts(
+            layers, species_groups
+        )
     warnings: list[str] = []
     axis_number = "xyz".index(axis)
-    if structure.pbc[axis_number] and len(layers) % 2:
-        warnings.append(
-            f"periodic {axis}-axis contains {len(layers)} magnetic layers; the "
-            "odd layer count breaks alternating AFM order across the PBC boundary"
+    if per_species:
+        for symbol, stack in species_layers.items():
+            if structure.pbc[axis_number] and len(stack) % 2:
+                warnings.append(
+                    f"periodic {axis}-axis contains {len(stack)} magnetic layers "
+                    f"for species {symbol}; the odd layer count breaks alternating "
+                    "AFM order across the PBC boundary"
+                )
+            elif not structure.pbc[axis_number] and len(stack) % 2:
+                warnings.append(
+                    f"uncompensated AFM slab for species {symbol}: net initial "
+                    "moment is nonzero (odd magnetic layer count)"
+                )
+    else:
+        if structure.pbc[axis_number] and len(layers) % 2:
+            warnings.append(
+                f"periodic {axis}-axis contains {len(layers)} magnetic layers; the "
+                "odd layer count breaks alternating AFM order across the PBC boundary"
+            )
+        elif not structure.pbc[axis_number] and len(layers) % 2:
+            warnings.append(
+                "uncompensated AFM slab: net initial moment is nonzero "
+                "(odd magnetic layer count)"
+            )
+        warnings.extend(
+            _combined_layer_species_warnings(structure, signs, f"along {axis}")
         )
-    elif not structure.pbc[axis_number] and len(layers) % 2:
-        warnings.append(
-            "uncompensated AFM slab: net initial moment is nonzero "
-            "(odd magnetic layer count)"
-        )
-    warnings.extend(
-        _combined_layer_species_warnings(structure, signs, f"along {axis}")
-    )
+    metadata: dict[str, object] = {
+        "axis": axis,
+        "layer_tolerance": tolerance,
+        "fractional_layers": fractional,
+        "layers": layers,
+        "wrapped_layer_merged": wrapped_layer_merged,
+        "per_species": per_species,
+        "species_layer_counts": species_layer_counts,
+    }
+    if per_species:
+        metadata["species_layers"] = species_layers
+        metadata["species_wrapped_layer_merged"] = species_wrapped_layer_merged
     return SpinAssignment(
         signs,
         "layer",
-        {
-            "axis": axis,
-            "layer_tolerance": tolerance,
-            "fractional_layers": fractional,
-            "layers": layers,
-            "wrapped_layer_merged": wrapped_layer_merged,
-        },
+        metadata,
         warnings,
     )
 
@@ -460,17 +538,41 @@ def direction_layer_ordering(
     direction: Sequence[float],
     *,
     tolerance: float = 0.25,
+    per_species: bool = False,
 ) -> SpinAssignment:
     """Alternate layers along an arbitrary Cartesian projection direction."""
 
     layers, vector = detect_direction_layers(
         structure, indices, direction, tolerance=tolerance
     )
-    signs = {
-        index: 1 if layer_number % 2 == 0 else -1
-        for layer_number, layer in enumerate(layers)
-        for index in layer
-    }
+    species_groups = _group_indices_by_species(structure, indices)
+    species_layers: dict[str, list[list[int]]] = {}
+    if per_species:
+        signs: dict[int, int] = {}
+        for symbol, species_indices in species_groups:
+            stack, _ = detect_direction_layers(
+                structure, species_indices, direction, tolerance=tolerance
+            )
+            species_layers[symbol] = stack
+            signs.update(
+                {
+                    index: 1 if layer_number % 2 == 0 else -1
+                    for layer_number, layer in enumerate(stack)
+                    for index in layer
+                }
+            )
+        species_layer_counts = {
+            symbol: len(stack) for symbol, stack in species_layers.items()
+        }
+    else:
+        signs = {
+            index: 1 if layer_number % 2 == 0 else -1
+            for layer_number, layer in enumerate(layers)
+            for index in layer
+        }
+        species_layer_counts = _combined_species_layer_counts(
+            layers, species_groups
+        )
     fully_periodic_direction = all(
         structure.pbc[axis]
         for axis, component in enumerate(vector)
@@ -486,30 +588,50 @@ def direction_layer_ordering(
             "layers crossing a periodic cell boundary are not merged for an "
             "arbitrary layer direction"
         )
-    if fully_periodic_direction and len(layers) % 2:
-        warnings.append(
-            f"periodic layer direction contains {len(layers)} magnetic layers; the "
-            "odd layer count may break alternating AFM order across a PBC boundary"
-        )
-    elif not has_periodic_component and len(layers) % 2:
-        warnings.append(
-            "uncompensated AFM slab: net initial moment is nonzero "
-            "(odd magnetic layer count)"
-        )
+    if per_species:
+        for symbol, stack in species_layers.items():
+            if fully_periodic_direction and len(stack) % 2:
+                warnings.append(
+                    f"periodic layer direction contains {len(stack)} magnetic layers "
+                    f"for species {symbol}; the odd layer count may break alternating "
+                    "AFM order across a PBC boundary"
+                )
+            elif not has_periodic_component and len(stack) % 2:
+                warnings.append(
+                    f"uncompensated AFM slab for species {symbol}: net initial "
+                    "moment is nonzero (odd magnetic layer count)"
+                )
+    else:
+        if fully_periodic_direction and len(layers) % 2:
+            warnings.append(
+                f"periodic layer direction contains {len(layers)} magnetic layers; the "
+                "odd layer count may break alternating AFM order across a PBC boundary"
+            )
+        elif not has_periodic_component and len(layers) % 2:
+            warnings.append(
+                "uncompensated AFM slab: net initial moment is nonzero "
+                "(odd magnetic layer count)"
+            )
     direction_text = " ".join(f"{value:.6g}" for value in vector)
-    warnings.extend(
-        _combined_layer_species_warnings(
-            structure, signs, f"along direction ({direction_text})"
+    if not per_species:
+        warnings.extend(
+            _combined_layer_species_warnings(
+                structure, signs, f"along direction ({direction_text})"
+            )
         )
-    )
+    metadata: dict[str, object] = {
+        "layer_direction": vector.tolist(),
+        "layer_tolerance": tolerance,
+        "layers": layers,
+        "per_species": per_species,
+        "species_layer_counts": species_layer_counts,
+    }
+    if per_species:
+        metadata["species_layers"] = species_layers
     return SpinAssignment(
         signs,
         "layer",
-        {
-            "layer_direction": vector.tolist(),
-            "layer_tolerance": tolerance,
-            "layers": layers,
-        },
+        metadata,
         warnings,
     )
 
@@ -542,8 +664,9 @@ def _combined_layer_species_warnings(
             f"species {display_names[normalized]} is entirely {orientation} under "
             f"combined layering {direction}; its sublattice coincides only with "
             f"{parity}-parity layers of the combined stack. Consider --method "
-            "by-coordination for multi-species ferrimagnets, or layer each "
-            "species separately."
+            "by-coordination for multi-species ferrimagnets, or consider "
+            "--layer-per-species to alternate each species on its own coordinate "
+            "stack."
         )
     return warnings
 

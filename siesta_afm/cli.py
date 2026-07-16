@@ -167,6 +167,11 @@ def _add_ordering_controls(parser: argparse.ArgumentParser) -> None:
         "--layer-pattern", choices=["alternating"], default="alternating"
     )
     parser.add_argument("--fractional-layers", action="store_true")
+    parser.add_argument(
+        "--layer-per-species",
+        action="store_true",
+        help="alternate an independent layer stack for each magnetic element",
+    )
     parser.add_argument("--plane", choices=["xy", "xz", "yz"], default="xy")
     _add_neighbor_controls(parser)
     parser.add_argument("--allow-frustrated", action="store_true")
@@ -455,6 +460,7 @@ def _workflow_kwargs(args: argparse.Namespace) -> dict[str, Any]:
         "layer_direction": args.layer_direction,
         "layer_tolerance": args.layer_tolerance,
         "fractional_layers": args.fractional_layers,
+        "layer_per_species": args.layer_per_species,
         "plane": args.plane,
         "cutoff": args.cutoff,
         "neighbor_shell": args.neighbor_shell,
@@ -736,6 +742,8 @@ def _cmd_enumerate(args: argparse.Namespace) -> int:
     unknown = [method for method in methods if method not in allowed]
     if unknown:
         raise ValueError(f"unsupported enumeration method: {unknown[0]}")
+    if args.layer_per_species and "layer" not in methods:
+        raise ValueError("--layer-per-species requires --methods to include layer")
     structure = _read_from_args(args)
     result = enumerate_candidates(
         structure,

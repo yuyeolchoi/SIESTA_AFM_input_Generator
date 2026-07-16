@@ -77,6 +77,7 @@ def generate_assignment(
     layer_direction: Sequence[float] | None = None,
     layer_tolerance: float = 0.25,
     fractional_layers: bool = False,
+    layer_per_species: bool = False,
     plane: str = "xy",
     cutoff: str | float | None = "auto",
     neighbor_shell: int = 1,
@@ -103,6 +104,8 @@ def generate_assignment(
     spin_mode: str = "collinear",
     seed: int = 0,
 ) -> tuple[list[int], SpinAssignment, dict[int, float]]:
+    if layer_per_species and method != "layer":
+        raise ValueError("--layer-per-species requires --method layer")
     if spin_mode not in {"collinear", "non-collinear"}:
         raise ValueError("spin mode must be 'collinear' or 'non-collinear'")
     if spin_mode == "non-collinear" and method != "graph-coloring":
@@ -185,7 +188,11 @@ def generate_assignment(
                     "--fractional-layers cannot be combined with --layer-direction"
                 )
             assignment = direction_layer_ordering(
-                structure, indices, layer_direction, tolerance=layer_tolerance
+                structure,
+                indices,
+                layer_direction,
+                tolerance=layer_tolerance,
+                per_species=layer_per_species,
             )
         else:
             assignment = layer_ordering(
@@ -194,6 +201,7 @@ def generate_assignment(
                 axis=axis,
                 tolerance=layer_tolerance,
                 fractional=fractional_layers,
+                per_species=layer_per_species,
             )
     elif method == "checkerboard":
         assignment = checkerboard_ordering(
@@ -527,13 +535,16 @@ def enumerate_candidates(
             break
         method = normalized_methods[attempt % len(normalized_methods)]
         try:
+            method_workflow_kwargs = dict(workflow_kwargs)
+            if method != "layer":
+                method_workflow_kwargs["layer_per_species"] = False
             indices, assignment, spins = generate_assignment(
                 structure,
                 magnetic_species,
                 method,
                 moment,
                 seed=seed_offset + attempt,
-                **workflow_kwargs,
+                **method_workflow_kwargs,
             )
         except (ValueError, NonBipartiteError) as exc:
             message = f"{method}: {exc}"

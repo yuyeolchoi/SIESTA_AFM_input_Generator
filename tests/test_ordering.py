@@ -45,6 +45,36 @@ def test_layer_tolerance_clusters_close_coordinates() -> None:
     assert layers == [[0, 1], [2, 3]]
     result = layer_ordering(atoms, range(4), axis="z", tolerance=0.2)
     assert result.signs == {0: 1, 1: 1, 2: -1, 3: -1}
+    assert result.metadata["per_species"] is False
+    assert result.metadata["species_layer_counts"] == {"Cu": 2}
+
+
+def test_layer_per_species_alternates_independent_element_stacks() -> None:
+    atoms = Structure(
+        ["Ni", "Co", "Ni", "Co"],
+        [[0, 0, 0], [0, 1, 0], [0, 2, 0], [0, 3, 0]],
+        np.eye(3) * 10,
+        (False, False, False),
+    )
+    combined = layer_ordering(atoms, range(4), axis="y", tolerance=0.1)
+    explicit_default = layer_ordering(
+        atoms, range(4), axis="y", tolerance=0.1, per_species=False
+    )
+    separated = layer_ordering(
+        atoms, range(4), axis="y", tolerance=0.1, per_species=True
+    )
+
+    assert explicit_default == combined
+    assert combined.signs == {0: 1, 1: -1, 2: 1, 3: -1}
+    assert separated.signs == {0: 1, 2: -1, 1: 1, 3: -1}
+    assert separated.metadata["per_species"] is True
+    assert separated.metadata["species_layer_counts"] == {"Ni": 2, "Co": 2}
+    assert separated.metadata["species_layers"] == {
+        "Ni": [[0], [2]],
+        "Co": [[1], [3]],
+    }
+    assert sum(separated.signs[index] for index in (0, 2)) == 0
+    assert sum(separated.signs[index] for index in (1, 3)) == 0
 
 
 def test_neighbor_bipartite_colors_disconnected_components() -> None:
@@ -471,6 +501,22 @@ def test_real_nico_311_combined_layering_warns_for_uniform_ni_sign() -> None:
     assert "species Ni is entirely spin-up" in warning
     assert "combined layering along y" in warning
     assert "--method by-coordination" in warning
+    assert "consider --layer-per-species" in warning
+
+    separated = layer_ordering(
+        atoms, indices, axis="y", tolerance=0.25, per_species=True
+    )
+    assert {
+        species: sum(
+            separated.signs[index]
+            for index in indices
+            if atoms.symbols[index] == species
+        )
+        for species in ("Co", "Ni")
+    } == {"Co": 0, "Ni": 0}
+    assert separated.metadata["per_species"] is True
+    assert separated.metadata["species_layer_counts"] == {"Co": 12, "Ni": 6}
+    assert "combined layering" not in "\n".join(separated.warnings)
 
     cobalt_only = [index for index in indices if atoms.symbols[index] == "Co"]
     assert "entirely spin" not in "\n".join(
@@ -488,9 +534,21 @@ def test_direction_layering_warns_for_a_uniform_species_sign() -> None:
     result = direction_layer_ordering(
         atoms, range(4), [0, 1, 0], tolerance=0.1
     )
+    assert direction_layer_ordering(
+        atoms, range(4), [0, 1, 0], tolerance=0.1, per_species=False
+    ) == result
     warning = "\n".join(result.warnings)
     assert "species Ni is entirely spin-up" in warning
     assert "combined layering along direction (0 1 0)" in warning
+    assert "consider --layer-per-species" in warning
+
+    separated = direction_layer_ordering(
+        atoms, range(4), [0, 1, 0], tolerance=0.1, per_species=True
+    )
+    assert separated.signs == {0: 1, 2: -1, 1: 1, 3: -1}
+    assert separated.metadata["per_species"] is True
+    assert separated.metadata["species_layer_counts"] == {"Ni": 2, "Co": 2}
+    assert "combined layering" not in "\n".join(separated.warnings)
 
 
 def test_real_nico_311_gap_based_coordination_keeps_distorted_first_shell() -> None:

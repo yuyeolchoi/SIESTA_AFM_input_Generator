@@ -93,6 +93,7 @@ class GenerationParams:
     axis: str = "z"
     layer_direction: tuple[float, float, float] | None = None
     fractional_layers: bool = False
+    layer_per_species: bool = False
     cutoff: str | float = "auto"
     layer_tolerance: float = 0.25
     slab: bool = False
@@ -464,6 +465,7 @@ def workflow_kwargs_from_inputs(
     layer_direction: str = "",
     layer_tolerance: str | float = 0.25,
     fractional_layers: bool = False,
+    layer_per_species: bool = False,
     auto_cutoff: bool = True,
     cutoff: str | float = 3.2,
     allow_frustrated: bool = False,
@@ -528,6 +530,7 @@ def workflow_kwargs_from_inputs(
         "layer_direction": parsed_layer_direction,
         "layer_tolerance": float(layer_tolerance),
         "fractional_layers": fractional_layers,
+        "layer_per_species": layer_per_species and "layer" in selected_methods,
         "cutoff": parsed_cutoff,
         "neighbor_shell": 1,
         "allow_frustrated": allow_frustrated,
@@ -897,6 +900,7 @@ def run_generation(params: GenerationParams) -> GenerationResult:
         layer_direction=params.layer_direction,
         layer_tolerance=params.layer_tolerance,
         fractional_layers=params.fractional_layers,
+        layer_per_species=params.layer_per_species,
         cutoff=params.cutoff,
         allow_frustrated=params.allow_frustrated,
         q_vector=params.q_vector,
