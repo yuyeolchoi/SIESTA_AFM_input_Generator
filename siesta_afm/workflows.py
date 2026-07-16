@@ -96,8 +96,21 @@ def generate_assignment(
     max_colors: int = 4,
     color_spins: str | Sequence[int] | None = None,
     balance_colors: bool = False,
+    spin_mode: str = "collinear",
     seed: int = 0,
 ) -> tuple[list[int], SpinAssignment, dict[int, float]]:
+    if spin_mode not in {"collinear", "non-collinear"}:
+        raise ValueError("spin mode must be 'collinear' or 'non-collinear'")
+    if spin_mode == "non-collinear" and method != "graph-coloring":
+        raise ValueError(
+            "non-collinear generation is only supported with --method "
+            "graph-coloring; other assignment methods only produce collinear "
+            "±1 signs"
+        )
+    if spin_mode == "non-collinear" and color_spins is not None:
+        raise ValueError(
+            "--spin-mode non-collinear cannot be combined with --color-spins"
+        )
     indices = select_magnetic_sites(
         structure,
         magnetic_species,
@@ -322,7 +335,14 @@ def generate_assignment(
             "is ~0 -- and are only a starting guess; pass --moment to set them "
             "explicitly.",
         )
-    return indices, assignment, assignment.moments(resolved_magnitudes)
+    spins = assignment.moments(resolved_magnitudes)
+    if spin_mode == "non-collinear":
+        assignment.metadata["spin_mode"] = spin_mode
+        spins = {
+            index: abs(float(resolved_magnitudes[index]))
+            for index in indices
+        }
+    return indices, assignment, spins
 
 
 def _canonical_pattern(

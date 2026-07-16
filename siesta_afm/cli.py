@@ -11,6 +11,7 @@ from typing import Any, Sequence
 
 from . import __version__
 from .fdf_writer import patch_fdf_file, patch_fdf_text, render_dm_init_spin
+from .gui.controllers import angles_from_result
 from .input_template import render_complete_input
 from .io import parse_dm_init_spin, read_structure
 from .magnetic_sites import (
@@ -101,6 +102,18 @@ def _add_site_comment_control(parser: argparse.ArgumentParser) -> None:
         action="store_false",
         default=True,
         help="omit element/CN comments from DM.InitSpin rows",
+    )
+
+
+def _add_spin_mode_control(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--spin-mode",
+        choices=["collinear", "non-collinear"],
+        default="collinear",
+        help=(
+            "generate signed collinear moments (default) or map graph colors "
+            "to in-plane non-collinear angles"
+        ),
     )
 
 
@@ -207,6 +220,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_structure_controls(generate)
     _add_site_controls(generate)
     generate.add_argument("--method", choices=METHODS, required=True)
+    _add_spin_mode_control(generate)
     _add_ordering_controls(generate)
     generate.add_argument(
         "--seed",
@@ -229,6 +243,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_structure_controls(make_input)
     _add_site_controls(make_input)
     make_input.add_argument("--method", choices=METHODS, required=True)
+    _add_spin_mode_control(make_input)
     _add_ordering_controls(make_input)
     make_input.add_argument(
         "--seed",
@@ -443,6 +458,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         args.magnetic_species,
         args.method,
         _moment_values(args),
+        spin_mode=args.spin_mode,
         seed=args.seed,
         **_workflow_kwargs(args),
     )
@@ -453,6 +469,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         method=assignment.method,
         magnetic_species=args.magnetic_species,
         metadata=assignment.metadata,
+        angles=angles_from_result(assignment),
         structure=structure,
         write_zero_spins=args.write_zero_spins,
         site_comments=args.site_comments,
@@ -516,6 +533,7 @@ def _cmd_make_input(args: argparse.Namespace) -> int:
         args.magnetic_species,
         args.method,
         _moment_values(args),
+        spin_mode=args.spin_mode,
         seed=args.seed,
         **_workflow_kwargs(args),
     )
@@ -525,6 +543,7 @@ def _cmd_make_input(args: argparse.Namespace) -> int:
         method=assignment.method,
         magnetic_species=args.magnetic_species,
         metadata=assignment.metadata,
+        angles=angles_from_result(assignment),
         basis_size=args.basis_size,
         kgrid_cutoff=args.kgrid_cutoff,
         kgrid=args.kgrid,
@@ -611,7 +630,13 @@ def _cmd_patch(args: argparse.Namespace) -> int:
 
 def _cmd_plot(args: argparse.Namespace) -> int:
     structure = _read_from_args(args)
-    spins = {index - 1: value for index, value in parse_dm_init_spin(args.spin_file)}
+    rows = parse_dm_init_spin(args.spin_file)
+    angle_rows = parse_dm_init_spin(args.spin_file, include_angles=True)
+    spins = {index - 1: value for index, value in rows}
+    angles = {
+        index - 1: (theta, phi)
+        for index, _moment, theta, phi in angle_rows
+    }
     if args.color_mode == "value" and (
         args.up_color is not None or args.down_color is not None
     ):
@@ -623,6 +648,7 @@ def _cmd_plot(args: argparse.Namespace) -> int:
         structure,
         spins,
         args.output,
+        angles=angles,
         show_indices=args.show_indices,
         color_by_layer=args.color_by_layer,
         color_mode=args.color_mode,

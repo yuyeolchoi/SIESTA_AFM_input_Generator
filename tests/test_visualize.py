@@ -5,6 +5,7 @@ import pytest
 
 from siesta_afm.structure import Structure
 from siesta_afm.visualize import (
+    _spin_vectors,
     classify_spin_indices,
     create_spin_figure,
     element_spin_counts,
@@ -207,3 +208,23 @@ def test_create_spin_figure_draws_detected_bonds() -> None:
     assert len(figure.axes[0].lines) == 1
     assert figure.axes[0].lines[0].get_color() == "0.5"
     figure.clear()
+
+
+def test_spin_vectors_keep_collinear_directions_exact() -> None:
+    dx, dy, dz = _spin_vectors({0: 1.0, 1: -1.0}, [0, 1], None)
+
+    assert dx.tolist() == [0.0, 0.0]
+    assert dy.tolist() == [0.0, 0.0]
+    assert dz.tolist() == pytest.approx([0.45, -0.45])
+
+
+def test_spin_vectors_follow_noncollinear_theta_phi_angles() -> None:
+    dx, dy, dz = _spin_vectors(
+        {0: 1.0, 1: 1.0, 2: 1.0},
+        [0, 1, 2],
+        {0: (90.0, 0.0), 1: (0.0, 37.0), 2: (180.0, 91.0)},
+    )
+
+    assert dx == pytest.approx([0.45, 0.0, 0.0])
+    assert dy == pytest.approx([0.0, 0.0, 0.0])
+    assert dz == pytest.approx([0.0, 0.45, -0.45])

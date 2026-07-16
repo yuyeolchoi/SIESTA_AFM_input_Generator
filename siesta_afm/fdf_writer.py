@@ -16,6 +16,7 @@ def render_dm_init_spin(
     method: str,
     magnetic_species: Sequence[str],
     metadata: Mapping[str, object] | None = None,
+    angles: Mapping[int, tuple[float, float]] | None = None,
     structure: Structure | None = None,
     write_zero_spins: bool = False,
     site_comments: bool = True,
@@ -26,6 +27,7 @@ def render_dm_init_spin(
     rows: dict[int, float] = dict(spins)
     if structure is not None and write_zero_spins:
         rows = {index: rows.get(index, 0.0) for index in range(len(structure))}
+    non_collinear = angles is not None and any(index in angles for index in rows)
     n_up = sum(value > 0 for value in spins.values())
     n_down = sum(value < 0 for value in spins.values())
     header = [
@@ -66,7 +68,7 @@ def render_dm_init_spin(
         [
             f"# Number of spin-up atoms: {n_up}",
             f"# Number of spin-down atoms: {n_down}",
-            "Spin polarized",
+            "Spin non-collinear" if non_collinear else "Spin polarized",
             "",
             "%block DM.InitSpin",
         ]
@@ -74,7 +76,14 @@ def render_dm_init_spin(
     coordination_numbers = metadata.get("coordination_numbers")
     coordination_geometry = metadata.get("coordination_geometry")
     for index in sorted(rows):
-        line = f"{index + 1:6d} {rows[index]:12.6f}"
+        if angles is not None and index in angles:
+            theta, phi = angles[index]
+            line = (
+                f"{index + 1:6d} {abs(rows[index]):12.6f} "
+                f"{theta:10.4f} {phi:10.4f}"
+            )
+        else:
+            line = f"{index + 1:6d} {rows[index]:12.6f}"
         if structure is not None and site_comments and 0 <= index < len(structure):
             symbol = structure.symbols[index]
             line += f"  # {symbol:<2}"
@@ -148,7 +157,7 @@ def _spin_control(line: str) -> tuple[str, str] | None:
     return None
 
 
-def _patch_spin_control(input_text: str) -> str:
+def _patch_spin_control(input_text: str, *, non_collinear: bool = False) -> str:
     lines = input_text.splitlines()
     controls = [(index, _spin_control(line)) for index, line in enumerate(lines)]
     controls = [(index, control) for index, control in controls if control is not None]
@@ -166,14 +175,28 @@ def _patch_spin_control(input_text: str) -> str:
                     f"unrecognized FDF logical value {value!r} for "
                     f"{kind.removeprefix('legacy-')}"
                 )
-            if kind in {"legacy-noncollinearspin", "legacy-spinorbit"} and enabled:
+            if kind == "legacy-spinorbit" and enabled:
+                keyword = kind.removeprefix("legacy-")
+                raise ValueError(
+                    f"cannot patch {'non-collinear' if non_collinear else 'collinear'} "
+                    "DM.InitSpin into an FDF input using "
+                    f"enabled legacy '{keyword}'; use a collinear "
+                    "'Spin polarized' calculation"
+                )
+            if kind == "legacy-noncollinearspin" and enabled and not non_collinear:
                 keyword = kind.removeprefix("legacy-")
                 raise ValueError(
                     "cannot patch collinear DM.InitSpin into an FDF input using "
                     f"enabled legacy '{keyword}'; use a collinear "
                     "'Spin polarized' calculation"
                 )
-        elif value in incompatible or value.startswith("spinorbit"):
+        elif value.startswith("spinorbit"):
+            raise ValueError(
+                f"cannot patch {'non-collinear' if non_collinear else 'collinear'} "
+                "DM.InitSpin into an FDF input using "
+                f"'Spin {value}'; use a collinear 'Spin polarized' calculation"
+            )
+        elif value in incompatible and not non_collinear:
             raise ValueError(
                 "cannot patch collinear DM.InitSpin into an FDF input using "
                 f"'Spin {value}'; use a collinear 'Spin polarized' calculation"
@@ -181,11 +204,23 @@ def _patch_spin_control(input_text: str) -> str:
     if controls:
         first_index = controls[0][0]
         indent = re.match(r"^\s*", lines[first_index]).group(0)  # type: ignore[union-attr]
-        lines[first_index] = f"{indent}Spin polarized"
+        mode = "non-collinear" if non_collinear else "polarized"
+        lines[first_index] = f"{indent}Spin {mode}"
         for index, _ in reversed(controls[1:]):
             del lines[index]
         return "\n".join(lines) + ("\n" if input_text.endswith(("\n", "\r")) else "")
-    return input_text.rstrip() + "\n\nSpin polarized\n"
+    mode = "non-collinear" if non_collinear else "polarized"
+    return input_text.rstrip() + f"\n\nSpin {mode}\n"
+
+
+def _spin_block_has_angles(block: str) -> bool:
+    """Return whether a DM.InitSpin block contains a four-field data row."""
+
+    for raw in block.splitlines():
+        code = re.split(r"[#!]", raw, maxsplit=1)[0].strip()
+        if code and not code.startswith("%") and len(code.split()) >= 4:
+            return True
+    return False
 
 
 def patch_fdf_text(input_text: str, spin_text: str) -> str:
@@ -195,8 +230,9 @@ def patch_fdf_text(input_text: str, spin_text: str) -> str:
     if not block_match:
         raise ValueError("spin file does not contain a DM.InitSpin block")
     block = block_match.group(0).strip() + "\n"
+    non_collinear = _spin_block_has_angles(block)
 
-    patched = _patch_spin_control(input_text)
+    patched = _patch_spin_control(input_text, non_collinear=non_collinear)
 
     if _SPIN_BLOCK_RE.search(patched):
         patched = _SPIN_BLOCK_RE.sub(block + "\n", patched, count=1)

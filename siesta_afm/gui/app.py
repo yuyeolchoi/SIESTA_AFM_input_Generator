@@ -29,6 +29,7 @@ from .controllers import (
     _RESULTS_NOTEBOOK_MIN_HEIGHT,
     _element_counts,
     _split_words,
+    angles_from_result,
     batch_moment_text_from_rows,
     candidate_table_rows,
     collect_or_load_results,
@@ -171,6 +172,7 @@ class DesktopApp:
         tk = self.tk
         self.file_var = tk.StringVar(value="No structure selected")
         self.method_var = tk.StringVar(value="layer")
+        self.spin_mode_var = tk.StringVar(value="collinear")
         self.site_moment_file_var = tk.StringVar(value="")
         self.site_comments_var = tk.BooleanVar(value=True)
         self.cli_options_var = tk.StringVar(value="--magnetic-species")
@@ -445,19 +447,37 @@ class DesktopApp:
         row += 1
 
         graph_frame = self._option_frame(panel, row, "Graph-coloring options")
-        option_row = self._entry_row(
-            graph_frame, 0, "Maximum colors", self.max_colors_var
+        option_row = self._combo_row(
+            graph_frame,
+            0,
+            "Spin mode",
+            self.spin_mode_var,
+            ["collinear", "non-collinear"],
         )
         option_row = self._entry_row(
-            graph_frame, option_row, "Color spins", self.color_spins_var
+            graph_frame, option_row, "Maximum colors", self.max_colors_var
         )
+        ttk.Label(graph_frame, text="Color spins", wraplength=110).grid(
+            row=option_row, column=0, sticky="w"
+        )
+        self.color_spins_entry = ttk.Entry(
+            graph_frame, textvariable=self.color_spins_var
+        )
+        self.color_spins_entry.grid(
+            row=option_row, column=1, sticky="ew", padx=(6, 0), pady=3
+        )
+        self.control_inputs.append(self.color_spins_entry)
+        option_row += 1
         self._help_row(graph_frame, option_row, "+1,-1,0; blank uses the default map.")
         option_row += 1
-        ttk.Checkbutton(
+        self.balance_colors_check = ttk.Checkbutton(
             graph_frame,
             text="Balance graph colors",
             variable=self.balance_colors_var,
-        ).grid(row=option_row, column=0, columnspan=2, sticky="w", pady=3)
+        )
+        self.balance_colors_check.grid(
+            row=option_row, column=0, columnspan=2, sticky="w", pady=3
+        )
         option_row += 1
         self._entry_row(graph_frame, option_row, "Seed", self.seed_var)
         self.method_option_frames["graph-coloring"] = graph_frame
@@ -1231,6 +1251,12 @@ class DesktopApp:
         else:
             self.checker_tolerance_label.grid_remove()
             self.checker_tolerance_entry.grid_remove()
+        self._sync_graph_spin_mode_state()
+
+    def _sync_graph_spin_mode_state(self) -> None:
+        state = "normal" if self.spin_mode_var.get() == "collinear" else "disabled"
+        self.color_spins_entry.configure(state=state)
+        self.balance_colors_check.configure(state=state)
 
     def _populate_magnetization_tree(self) -> None:
         for item in self.magnetization_tree.get_children():
@@ -1386,6 +1412,7 @@ class DesktopApp:
             self.q_vector_var,
             self.afm_type_var,
             self.max_colors_var,
+            self.spin_mode_var,
             self.color_spins_var,
             self.balance_colors_var,
             self.seed_var,
@@ -1527,7 +1554,10 @@ class DesktopApp:
             n_up, n_down, n_zero = counts[element]
             label.configure(text=f"↑{n_up} ↓{n_down} ·{n_zero}")
 
-    def _preview_display_kwargs(self) -> dict[str, object]:
+    def _preview_display_kwargs(
+        self,
+        result: GenerationResult | SpinFileResult | None = None,
+    ) -> dict[str, object]:
         show_bonds = self.show_bonds_var.get()
         visible_spin_elements = (
             {
@@ -1548,6 +1578,9 @@ class DesktopApp:
             else None
         )
         return {
+            "angles": angles_from_result(result or self.current_result)
+            if result is not None or self.current_result is not None
+            else None,
             "show_indices": self.show_atom_indices_var.get(),
             "visible_spin_elements": visible_spin_elements,
             "coordination_numbers": self.spin_coordination_numbers or None,
@@ -1822,10 +1855,19 @@ class DesktopApp:
         workflow_kwargs.pop("neighbor_shell")
         workflow_kwargs.pop("group_file")
         seed = workflow_kwargs.pop("seed_offset")
+        spin_mode = (
+            self.spin_mode_var.get()
+            if method == "graph-coloring"
+            else "collinear"
+        )
+        if spin_mode == "non-collinear":
+            workflow_kwargs["color_spins"] = None
+            workflow_kwargs["balance_colors"] = False
         return GenerationParams(
             structure_path=self.structure_path,
             magnetic_species=species,
             method=method,
+            spin_mode=spin_mode,
             moment=moment,
             site_comments=self.site_comments_var.get(),
             slab=self.slab_var.get(),
@@ -1841,6 +1883,7 @@ class DesktopApp:
         if not self._traces_ready:
             return
         self._sync_cutoff_state()
+        self._sync_graph_spin_mode_state()
         if self.viewing_spin_path is not None:
             self.viewing_spin_path = None
             self.mode_var.set("generation mode (spin-file view ended)")
@@ -1894,7 +1937,7 @@ class DesktopApp:
                 result.structure,
                 result.spins,
                 color_mode=params.color_mode,
-                **self._preview_display_kwargs(),
+                **self._preview_display_kwargs(result),
             )
             self._update_spin_element_summary(result.spins)
             self._restore_camera(figure, camera)
@@ -1961,7 +2004,7 @@ class DesktopApp:
                 structure,
                 loaded.spins,
                 color_mode=_COLOR_MODES[self.color_mode_var.get()],
-                **self._preview_display_kwargs(),
+                **self._preview_display_kwargs(loaded),
             )
             self._update_spin_element_summary(loaded.spins)
             self._restore_camera(figure, camera)

@@ -72,6 +72,7 @@ def plot_spin_pattern(
     spins: Mapping[int, float],
     output: str | Path,
     *,
+    angles: Mapping[int, tuple[float, float]] | None = None,
     show_indices: bool = False,
     color_by_layer: bool = False,
     color_mode: str = "sign",
@@ -113,6 +114,7 @@ def plot_spin_pattern(
     fig = create_spin_figure(
         structure,
         spins,
+        angles=angles,
         show_indices=show_indices,
         color_by_layer=color_by_layer,
         color_mode=color_mode,
@@ -136,6 +138,7 @@ def create_spin_figure(
     structure: Structure,
     spins: Mapping[int, float],
     *,
+    angles: Mapping[int, tuple[float, float]] | None = None,
     show_indices: bool = False,
     color_by_layer: bool = False,
     color_mode: str = "sign",
@@ -197,9 +200,9 @@ def create_spin_figure(
             zorder=2,
         )
     if color_mode == "sign":
-        for sign, selected, color, label in (
-            (1, up_indices, up_color, "spin up"),
-            (-1, down_indices, down_color, "spin down"),
+        for selected, color, label in (
+            (up_indices, up_color, "spin up"),
+            (down_indices, down_color, "spin down"),
         ):
             if not selected:
                 continue
@@ -213,13 +216,13 @@ def create_spin_figure(
                 label=label,
                 zorder=2,
             )
-            dz = np.full(len(selected), 0.45 * sign)
+            dx, dy, dz = _spin_vectors(spins, selected, angles)
             ax.quiver(
                 pos[:, 0],
                 pos[:, 1],
                 pos[:, 2],
-                np.zeros(len(selected)),
-                np.zeros(len(selected)),
+                dx,
+                dy,
                 dz,
                 color=color,
                 arrow_length_ratio=0.35,
@@ -246,12 +249,15 @@ def create_spin_figure(
                 label="magnetic",
                 zorder=2,
             )
-            for position, value, color in zip(pos, values, colors, strict=True):
+            dx, dy, dz = _spin_vectors(spins, selected, angles)
+            for position, vx, vy, vz, color in zip(
+                pos, dx, dy, dz, colors, strict=True
+            ):
                 ax.quiver(
                     *position,
-                    0.0,
-                    0.0,
-                    0.45 * np.sign(value),
+                    vx,
+                    vy,
+                    vz,
                     color=color,
                     arrow_length_ratio=0.35,
                     linewidth=1.2,
@@ -284,3 +290,34 @@ def create_spin_figure(
     ax.legend(loc="best")
     fig.tight_layout()
     return fig
+
+
+def _spin_vectors(
+    spins: Mapping[int, float],
+    indices: list[int],
+    angles: Mapping[int, tuple[float, float]] | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return fixed-length Cartesian spin arrows from theta/phi directions."""
+
+    directions = []
+    for index in indices:
+        if angles is not None and index in angles:
+            theta, phi = angles[index]
+        else:
+            theta = 0.0 if spins[index] >= 0 else 180.0
+            phi = 0.0
+        theta_rad = np.deg2rad(theta)
+        phi_rad = np.deg2rad(phi)
+        directions.append(
+            (
+                0.45 * np.sin(theta_rad) * np.cos(phi_rad),
+                0.45 * np.sin(theta_rad) * np.sin(phi_rad),
+                0.45 * np.cos(theta_rad),
+            )
+        )
+    if not directions:
+        empty = np.asarray([], dtype=float)
+        return empty, empty, empty
+    vectors = np.asarray(directions, dtype=float)
+    vectors[np.isclose(vectors, 0.0, atol=1e-15)] = 0.0
+    return vectors[:, 0], vectors[:, 1], vectors[:, 2]

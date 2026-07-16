@@ -109,6 +109,7 @@ class GenerationParams:
     balance_colors: bool = False
     seed: int = 0
     color_mode: str = "sign"
+    spin_mode: str = "collinear"
 
 
 @dataclass(slots=True)
@@ -133,6 +134,7 @@ class SpinFileResult:
     block: str
     validation: ValidationReport
     warnings: tuple[str, ...]
+    angles: dict[int, tuple[float, float]] | None = None
 
 
 @dataclass(slots=True)
@@ -155,6 +157,33 @@ class ResultTableRow:
 
     values: tuple[str, ...]
     tags: tuple[str, ...]
+
+
+def angles_from_result(
+    result: GenerationResult | SpinFileResult | SpinAssignment,
+) -> dict[int, tuple[float, float]] | None:
+    """Map graph-coloring metadata to in-plane non-collinear directions."""
+
+    if isinstance(result, SpinFileResult):
+        return result.angles
+    assignment = result.assignment if isinstance(result, GenerationResult) else result
+    if assignment.metadata.get("spin_mode") != "non-collinear":
+        return None
+    colors = assignment.metadata.get("colors")
+    n_colors = assignment.metadata.get("n_colors")
+    if not isinstance(colors, Mapping) or not isinstance(n_colors, int) or n_colors < 1:
+        raise ValueError(
+            "non-collinear graph-coloring result is missing colors/n_colors metadata"
+        )
+    try:
+        return {
+            int(index): (90.0, 360.0 * int(color) / n_colors)
+            for index, color in colors.items()
+        }
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "non-collinear graph-coloring result has invalid color metadata"
+        ) from exc
 
 
 def _split_words(text: str) -> tuple[str, ...]:
@@ -741,6 +770,7 @@ def run_generation(params: GenerationParams) -> GenerationResult:
         max_colors=params.max_colors,
         color_spins=params.color_spins,
         balance_colors=params.balance_colors,
+        spin_mode=params.spin_mode,
         seed=params.seed,
     )
     apply_coordination_labels(
@@ -751,6 +781,7 @@ def run_generation(params: GenerationParams) -> GenerationResult:
         method=assignment.method,
         magnetic_species=params.magnetic_species,
         metadata=assignment.metadata,
+        angles=angles_from_result(assignment),
         structure=structure,
         site_comments=params.site_comments,
     )
@@ -945,6 +976,15 @@ def load_spin_file(
 
     parse_warnings: list[str] = []
     rows = parse_dm_init_spin(spin_path, warnings=parse_warnings)
+    angle_rows = parse_dm_init_spin(spin_path, include_angles=True)
+    angles = (
+        {
+            index - 1: (theta, phi)
+            for index, _moment, theta, phi in angle_rows
+        }
+        if parse_warnings
+        else None
+    )
     validation = validate_spins(
         rows,
         structure=structure,
@@ -966,12 +1006,14 @@ def load_spin_file(
         spins,
         method="loaded-spin-file",
         magnetic_species=species,
+        angles=angles,
         structure=structure,
         site_comments=site_comments,
     )
     return SpinFileResult(
         structure=structure,
         spins=spins,
+        angles=angles,
         block=block,
         validation=validation,
         warnings=tuple(parse_warnings),
@@ -1039,6 +1081,7 @@ def complete_input_document(
         method=method,
         magnetic_species=magnetic_species,
         metadata=metadata,
+        angles=angles_from_result(result),
         **options,
     )
 

@@ -420,6 +420,149 @@ def test_graph_coloring_cli_reports_warning_and_mapping_errors(
     assert "does not match 3 graph colors" in capsys.readouterr().err
 
 
+def test_noncollinear_spin_mode_requires_graph_coloring_and_no_color_map(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    structure = tmp_path / "triangle.xyz"
+    _write_triangle_xyz(structure)
+
+    code = main(
+        [
+            "generate",
+            str(structure),
+            "--magnetic-species",
+            "Cu",
+            "--method",
+            "alternating-index",
+            "--moment",
+            "1",
+            "--spin-mode",
+            "non-collinear",
+        ]
+    )
+    assert code == 2
+    assert "only supported with --method graph-coloring" in capsys.readouterr().err
+
+    code = main(
+        [
+            "generate",
+            str(structure),
+            "--magnetic-species",
+            "Cu",
+            "--method",
+            "graph-coloring",
+            "--moment",
+            "1",
+            "--spin-mode",
+            "non-collinear",
+            "--color-spins",
+            "+1,-1,0",
+        ]
+    )
+    assert code == 2
+    assert "cannot be combined with --color-spins" in capsys.readouterr().err
+
+
+def test_graph_coloring_noncollinear_cli_maps_three_colors_to_120_degrees(
+    tmp_path: Path,
+) -> None:
+    structure = tmp_path / "triangle.xyz"
+    _write_triangle_xyz(structure)
+    output = tmp_path / "noncollinear.fdf"
+
+    assert (
+        main(
+            [
+                "generate",
+                str(structure),
+                "--magnetic-species",
+                "Cu",
+                "--method",
+                "graph-coloring",
+                "--moment",
+                "1",
+                "--cutoff",
+                "1.01",
+                "--max-colors",
+                "3",
+                "--spin-mode",
+                "non-collinear",
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    rows = parse_dm_init_spin(output, include_angles=True)
+    assert {moment for _, moment, _, _ in rows} == {1.0}
+    assert {theta for _, _, theta, _ in rows} == {90.0}
+    assert sorted({phi for _, _, _, phi in rows}) == pytest.approx(
+        [0.0, 120.0, 240.0]
+    )
+    assert "Spin non-collinear" in output.read_text(encoding="utf-8")
+
+
+def test_explicit_collinear_spin_mode_matches_the_default_byte_for_byte(
+    tmp_path: Path,
+) -> None:
+    structure = tmp_path / "triangle.xyz"
+    _write_triangle_xyz(structure)
+    implicit = tmp_path / "implicit.fdf"
+    explicit = tmp_path / "explicit.fdf"
+    common = [
+        "generate",
+        str(structure),
+        "--magnetic-species",
+        "Cu",
+        "--method",
+        "graph-coloring",
+        "--moment",
+        "1",
+        "--cutoff",
+        "1.01",
+    ]
+
+    assert main([*common, "--output", str(implicit)]) == 0
+    assert main([*common, "--spin-mode", "collinear", "--output", str(explicit)]) == 0
+    assert explicit.read_bytes() == implicit.read_bytes()
+
+
+def test_make_input_supports_noncollinear_graph_coloring(
+    tmp_path: Path,
+) -> None:
+    structure = tmp_path / "triangle.xyz"
+    _write_triangle_xyz(structure)
+    output = tmp_path / "complete_noncollinear.fdf"
+
+    assert (
+        main(
+            [
+                "make-input",
+                str(structure),
+                "--magnetic-species",
+                "Cu",
+                "--method",
+                "graph-coloring",
+                "--moment",
+                "1",
+                "--cutoff",
+                "1.01",
+                "--spin-mode",
+                "non-collinear",
+                "--no-lda-u",
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    assert "Spin non-collinear" in output.read_text(encoding="utf-8")
+    assert all(
+        theta == 90.0
+        for _, _, theta, _ in parse_dm_init_spin(output, include_angles=True)
+    )
+
+
 def test_enumerate_graph_coloring_varies_color_spin_permutation(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

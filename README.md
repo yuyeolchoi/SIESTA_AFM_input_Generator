@@ -50,7 +50,9 @@ Use `--filter-elements Ni Co` to show spin colors and arrows only for selected
 elements; all other atoms remain visible as gray nonmagnetic markers. Add
 `--show-bonds` to draw ASE covalent-radius bonds and adjust their detection with
 `--bond-radius-scale` (default `1.0`). Bonds that cross a periodic cell boundary
-are not displayed.
+are not displayed. Non-collinear arrows follow the `DM.InitSpin` theta/phi
+directions, while up/down colors deliberately continue to use the sign of the
+scalar moment (so a purely in-plane moment may still use the spin-up color).
 
 To insert the result into an existing SIESTA input:
 
@@ -254,6 +256,13 @@ If the `neighbor-bipartite` graph is not bipartite, the program does not fabrica
 When the graph splits into two or more connected components, only the alternating sign inside each component is determined by the graph. The relative sign between components is a deterministic convention based on the lowest atom index and has no physical meaning. In that case the program warns with the component count and sizes and suggests tuning `--neighbor-cutoff` to include interlayer superexchange or considering the `layer` / `propagation-vector` methods. A layer slab with an odd number of magnetic layers along a nonperiodic direction is not an error but an informational warning that it is an uncompensated AFM slab.
 
 `graph-coloring` is a multi-sublattice initial-candidate generator that applies DSATUR to a non-bipartite graph. `--max-colors` defaults to 4, and you can assign per-color signs with `--color-spins "+1,-1,0"` or use `--balance-colors` to pick the color-sign permutation that minimizes the absolute sum of the actual initial moments resolved from `--moment`, per-element moments, or a site-moment file. A proper coloring only avoids equal colors on adjacent atoms; it does not minimize energy. If a collinear energy candidate for a frustrated lattice is the goal, `--allow-frustrated` max-cut is more appropriate. In `enumerate`, the color-spin permutation is varied by the attempt seed to diversify candidates.
+
+For `generate` and `make-input`, `--spin-mode non-collinear` maps each graph
+color to an in-plane direction with `theta=90°` and
+`phi=360° * color / n_colors`; a three-color graph therefore gives
+0°/120°/240° order. This mode is available only with `--method graph-coloring`
+and cannot be combined with `--color-spins`. The default remains byte-for-byte
+compatible collinear output.
 
 ## Analysis and validation
 

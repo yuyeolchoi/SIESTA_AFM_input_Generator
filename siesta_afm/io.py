@@ -233,13 +233,19 @@ def read_structure(
 
 
 def parse_dm_init_spin(
-    text_or_path: str | Path, *, warnings: list[str] | None = None
-) -> list[tuple[int, float]]:
+    text_or_path: str | Path,
+    *,
+    warnings: list[str] | None = None,
+    include_angles: bool = False,
+) -> list[tuple[int, float]] | list[tuple[int, float, float, float]]:
     """Return DM.InitSpin rows while preserving duplicates for validation.
 
     SIESTA's maximum-polarization shorthands ``+`` and ``-`` are represented
-    as ``+1.0`` and ``-1.0``.  Non-collinear theta/phi fields are accepted but
-    ignored by this collinear tool and reported through ``warnings``.
+    as ``+1.0`` and ``-1.0``.  By default, non-collinear theta/phi fields are
+    accepted but ignored and reported through ``warnings``.  With
+    ``include_angles=True``, every row is normalized to
+    ``(atom_index, moment, theta, phi)``; two-field rows use an absolute
+    magnitude plus a synthesized 0/180-degree theta.
     """
 
     candidate = (
@@ -254,6 +260,7 @@ def parse_dm_init_spin(
     if block is None:
         raise ValueError("DM.InitSpin block not found")
     rows: list[tuple[int, float]] = []
+    angle_rows: list[tuple[int, float, float, float]] = []
     for raw in block:
         fields = _strip_comment(raw).split()
         if len(fields) >= 2:
@@ -264,13 +271,32 @@ def parse_dm_init_spin(
                 moment = -1.0
             else:
                 moment = float(fields[1].replace("d", "e").replace("D", "E"))
-            rows.append((atom_index, moment))
-            if len(fields) >= 3 and warnings is not None:
+            if include_angles:
+                if len(fields) >= 3:
+                    theta = float(fields[2].replace("d", "e").replace("D", "E"))
+                    phi = (
+                        float(fields[3].replace("d", "e").replace("D", "E"))
+                        if len(fields) >= 4
+                        else 0.0
+                    )
+                    angle_rows.append((atom_index, moment, theta, phi))
+                else:
+                    angle_rows.append(
+                        (
+                            atom_index,
+                            abs(moment),
+                            0.0 if moment >= 0 else 180.0,
+                            0.0,
+                        )
+                    )
+            else:
+                rows.append((atom_index, moment))
+            if not include_angles and len(fields) >= 3 and warnings is not None:
                 warnings.append(
                     f"DM.InitSpin atom {atom_index} has non-collinear theta/phi "
                     "fields; angles were ignored by the collinear parser"
                 )
-    return rows
+    return angle_rows if include_angles else rows
 
 
 def read_plain_fdf(path: str | Path) -> str:

@@ -131,6 +131,75 @@ def test_gui_controller_passes_graph_coloring_options(tmp_path: Path) -> None:
     assert "proper graph coloring" in "\n".join(result.warnings)
 
 
+def test_gui_controller_maps_noncollinear_graph_colors_to_angles(
+    tmp_path: Path,
+) -> None:
+    root3 = 3.0**0.5
+    structure = tmp_path / "triangle.xyz"
+    structure.write_text(
+        "3\ntriangle\n"
+        "Cu 0 0 0\n"
+        "Cu 1 0 0\n"
+        f"Cu 0.5 {root3 / 2:.12f} 0\n",
+        encoding="utf-8",
+    )
+
+    result = gui.run_generation(
+        gui.GenerationParams(
+            structure_path=structure,
+            magnetic_species=("Cu",),
+            method="graph-coloring",
+            spin_mode="non-collinear",
+            moment="1",
+            cutoff=1.01,
+            max_colors=3,
+        )
+    )
+
+    angles = gui.angles_from_result(result)
+    assert angles is not None
+    assert set(result.spins.values()) == {1.0}
+    assert {theta for theta, _ in angles.values()} == {90.0}
+    assert sorted(phi for _, phi in angles.values()) == pytest.approx(
+        [0.0, 120.0, 240.0]
+    )
+    assert "Spin non-collinear" in result.block
+    complete = gui.complete_input_document(result, lda_u=False)
+    assert "Spin non-collinear" in complete.text
+
+
+def test_gui_controller_rejects_invalid_noncollinear_combinations(
+    tmp_path: Path,
+) -> None:
+    structure = tmp_path / "pair.xyz"
+    structure.write_text(
+        "2\nCu pair\nCu 0 0 0\nCu 1 0 0\n", encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="only supported with --method graph-coloring"):
+        gui.run_generation(
+            gui.GenerationParams(
+                structure_path=structure,
+                magnetic_species=("Cu",),
+                method="layer",
+                spin_mode="non-collinear",
+                moment="1",
+            )
+        )
+    with pytest.raises(ValueError, match="cannot be combined with --color-spins"):
+        gui.run_generation(
+            gui.GenerationParams(
+                structure_path=structure,
+                magnetic_species=("Cu",),
+                method="graph-coloring",
+                spin_mode="non-collinear",
+                moment="1",
+                cutoff=1.01,
+                color_spins="+1,-1",
+            )
+        )
+
+
 def test_gui_controller_runs_inverse_spinel_coordination_method() -> None:
     result = gui.run_generation(
         gui.GenerationParams(
@@ -504,6 +573,16 @@ def test_default_gui_layout_keeps_visible_inputs_wide_enough(
             for row in app.magnetization_rows
             if row.use
         ] == [("Ni", 6), ("Co", 4), ("Co", 6)]
+
+        app.method_var.set("graph-coloring")
+        app.spin_mode_var.set("non-collinear")
+        root.update()
+        assert app.method_option_frames["graph-coloring"].winfo_ismapped()
+        assert app.color_spins_entry.instate(["disabled"])
+        assert app.balance_colors_check.instate(["disabled"])
+        app.method_var.set("layer")
+        root.update()
+        assert not app.method_option_frames["graph-coloring"].winfo_ismapped()
 
         generated = gui.run_generation(
             gui.GenerationParams(
@@ -1377,6 +1456,36 @@ def test_spin_file_viewer_converts_indices_and_builds_preview_block(
     assert [row["atom"] for row in rows] == [1, 3]
     assert all(row["CN"] == "-" and row["sublattice"] == "-" for row in rows)
     assert gui.site_assignment_summary(loaded).startswith("n_up = 1 / n_down = 1")
+
+
+def test_spin_file_viewer_preserves_noncollinear_angles(tmp_path: Path) -> None:
+    structure = Structure(
+        ["Cu", "Cu"],
+        [[0, 0, 0], [1, 0, 0]],
+        np.eye(3) * 4,
+        (False, False, False),
+    )
+    spin_file = tmp_path / "noncollinear.fdf"
+    spin_file.write_text(
+        "Spin non-collinear\n"
+        "%block DM.InitSpin\n"
+        "1 1.0 90.0 0.0\n"
+        "2 1.0 90.0 180.0\n"
+        "%endblock DM.InitSpin\n",
+        encoding="utf-8",
+    )
+
+    loaded = gui.load_spin_file(spin_file, structure)
+
+    assert gui.angles_from_result(loaded) == {
+        0: (90.0, 0.0),
+        1: (90.0, 180.0),
+    }
+    assert "Spin non-collinear" in loaded.block
+    assert parse_dm_init_spin(loaded.block, include_angles=True) == [
+        (1, 1.0, 90.0, 0.0),
+        (2, 1.0, 90.0, 180.0),
+    ]
 
 
 def test_export_patched_input_is_idempotent_and_preserves_base(tmp_path: Path) -> None:

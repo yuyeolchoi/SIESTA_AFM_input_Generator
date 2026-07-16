@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from siesta_afm.fdf_writer import patch_fdf_text, render_dm_init_spin
 from siesta_afm.io import parse_dm_init_spin
@@ -91,3 +92,76 @@ def test_writer_preserves_legacy_rows_without_structure_or_when_opted_out() -> N
     assert "     1     0.500000\n" in with_opt_out
     assert "# Cu" not in without_structure
     assert "# Cu" not in with_opt_out
+
+
+def test_writer_renders_mixed_noncollinear_rows_and_preserves_comments() -> None:
+    structure = Structure(
+        ["Cu", "Ni"], np.zeros((2, 3)), np.eye(3), (False,) * 3
+    )
+    text = render_dm_init_spin(
+        {0: -1.0, 1: -0.5},
+        method="graph-coloring",
+        magnetic_species=["Cu", "Ni"],
+        angles={0: (90.0, 120.0)},
+        structure=structure,
+    )
+
+    assert "Spin non-collinear" in text
+    assert "     1     1.000000    90.0000   120.0000  # Cu" in text
+    assert "     2    -0.500000  # Ni" in text
+    assert parse_dm_init_spin(text, include_angles=True) == [
+        (1, 1.0, 90.0, 120.0),
+        (2, 0.5, 180.0, 0.0),
+    ]
+
+
+def test_writer_empty_angles_keeps_collinear_output() -> None:
+    plain = render_dm_init_spin(
+        {0: 0.5}, method="layer", magnetic_species=["Cu"]
+    )
+    empty = render_dm_init_spin(
+        {0: 0.5}, method="layer", magnetic_species=["Cu"], angles={}
+    )
+
+    assert empty == plain
+    assert "Spin polarized" in empty
+
+
+@pytest.mark.parametrize(
+    "base",
+    ["SystemName test\n", "NonCollinearSpin true\n", "Spin non-collinear\n"],
+)
+def test_patch_accepts_noncollinear_spin_blocks(base: str) -> None:
+    spin_text = render_dm_init_spin(
+        {0: 1.0},
+        method="graph-coloring",
+        magnetic_species=["Cu"],
+        angles={0: (90.0, 0.0)},
+    )
+
+    patched = patch_fdf_text(base, spin_text)
+
+    assert patched.count("Spin non-collinear") == 1
+    assert "NonCollinearSpin" not in patched
+    assert patch_fdf_text(patched, spin_text) == patched
+
+
+def test_patch_keeps_soc_blocked_for_noncollinear_spin_blocks() -> None:
+    spin_text = render_dm_init_spin(
+        {0: 1.0},
+        method="graph-coloring",
+        magnetic_species=["Cu"],
+        angles={0: (90.0, 0.0)},
+    )
+
+    with pytest.raises(ValueError, match="spinorbit"):
+        patch_fdf_text("SpinOrbit true\n", spin_text)
+
+
+def test_patch_still_rejects_noncollinear_base_for_collinear_spin_block() -> None:
+    spin_text = render_dm_init_spin(
+        {0: 1.0}, method="layer", magnetic_species=["Cu"]
+    )
+
+    with pytest.raises(ValueError, match="collinear DM.InitSpin"):
+        patch_fdf_text("NonCollinearSpin true\n", spin_text)
