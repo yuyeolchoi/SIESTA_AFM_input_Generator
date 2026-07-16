@@ -328,9 +328,19 @@ siesta-afm collect-results siesta_jobs
 ```
 
 `enumerate`는 `--methods by-coordination,layer,frustrated`처럼 위상학적으로 다른 배치를
-비교하는 데 적합합니다. method와 attempt seed만 바꾸며 **moment 크기나 Hubbard U는
-스윕하지 않습니다.** 동일 패턴을 제거하고 기본적으로 전체 up/down 부호 반전도 같은
-후보로 봅니다. 전역 부호 반전은 시간 역전 대칭 때문에 collinear 계산에서 같은 에너지를
+비교하는 데 적합합니다. method와 attempt seed를 바꾸며,
+`--moment-sweep "Co@6=0.0,1.0" "Ni=1.0,2.0"`을 지정하면 moment 값의 모든
+데카르트 곱마다 요청한 패턴 수를 생성합니다. 값 목록 문법은 기존의 전역, `Element`,
+`Element@CN` moment 형식을 확장한 것입니다. 스윕에 없는 원소는 `--moment` 값을
+유지하며, 같은 원소를 두 옵션에 모두 지정하면 오류가 납니다. 스윕 파일명에는 `m1`,
+`m2`, ... 조합 접미사가 붙고 manifest에는 `moment_Co@6`, `moment_Ni` 같은 열이
+추가됩니다. 조합 수와 `--n-configs`의 곱은 최대 200개입니다.
+
+Hubbard U는 `DM.InitSpin` 파일에 영향을 주지 않으므로 `enumerate`에서 의도적으로
+스윕하지 않으며, U 스윕은 `make-input` 소관입니다.
+
+열거 과정은 동일 패턴을 제거하고 기본적으로 전체 up/down 부호 반전도 같은 후보로
+봅니다. 전역 부호 반전은 시간 역전 대칭 때문에 collinear 계산에서 같은 에너지를
 가지므로 보통 별도 계산할 필요가 없습니다. 두 관례가 특별히 모두 필요할 때만
 `--keep-global-spin-inversion`을 사용할 수 있습니다.
 
@@ -352,9 +362,10 @@ config_id,method,n_up,n_down,net_spin,afm_score,file
 각 행은 스핀 파일 하나를 나타냅니다. `method`에는 `by-coordination-ls`,
 `by-coordination-hs` 같은 label을 쓰고, 해당 파일의 up/down 수, 순스핀, AFM score를
 유지하거나 다시 계산하십시오. 그러면 `prepare-array`가 모든 후보를 같은 베이스 입력에
-patch할 수 있습니다. Hubbard U는 베이스 계산 설정이므로 U마다 별도의 베이스 입력과 작업
-배열을 만들어야 합니다. 원자별 산화수 배정에는 배위수에 의존하기보다
-`--site-moment-file`을 사용하는 편이 안전합니다.
+patch할 수 있습니다. Moment 스윕 manifest는 이 기본 열을 유지하면서 스윕 대상마다
+`moment_<target>` 열을 하나씩 추가합니다. Hubbard U는 베이스 계산 설정이므로 U마다
+별도의 베이스 입력과 작업 배열을 만들어야 합니다. 원자별 산화수 배정에는 배위수에
+의존하기보다 `--site-moment-file`을 사용하는 편이 안전합니다.
 
 `collect-results`는 각 폴더의 일반적인 SIESTA `.out`/`.log` 표현에서 에너지, 최종 순스핀, 원자별 Mulliken/Hirshfeld spin, 부호 유지율, collapse 및 수렴 표지를 읽어 `results.csv`로 씁니다. SIESTA 버전에 따라 출력 문구가 다르면 정규식 확장이 필요할 수 있습니다.
 
@@ -364,9 +375,11 @@ patch할 수 있습니다. Hubbard U는 베이스 계산 설정이므로 U마다
 단일 SIESTA 입력 생성에는 필요하지 않습니다. 이 탭에서 위의 후보 생성, 작업 준비,
 결과 확인 단계를 같은 파일 형식으로 실행할 수 있습니다. `Candidates`에서 여러 method와
 출력 디렉터리를 선택하면 현재
-magnetization 테이블의 `--magnetic-species`와 `--moment` 값으로 후보를 만들고, 생성된
-행과 건너뛴 method의 경고를 모두 표시합니다. `manual-groups`를 쓸 때는 같은 패널에서
-기존 group 파일도 선택합니다. 완전한 3차원 주기 입력에서는 기본으로 꺼진
+magnetization 테이블의 `--magnetic-species`와 스윕하지 않는 `--moment` 값으로 후보를
+만듭니다. 선택적인 `Moment sweep` 입력란에는 CLI와 같은 공백 구분 명세를 입력하며,
+비워 두면 기존 단일 moment 동작을 유지합니다. 생성된 행과 건너뛴 method의 경고를 모두
+표시합니다. `manual-groups`를 쓸 때는 같은 패널에서 기존 group 파일도 선택합니다.
+완전한 3차원 주기 입력에서는 기본으로 꺼진
 `Symmetry-aware dedup` 체크박스로 CLI와 같은 spglib 기반 후보 중복 제거를 켤 수
 있습니다. `Prepare jobs`에서는 먼저 `Build complete
 SIESTA input (make-input)...`으로 디스크에 저장한 완전한 FDF, `manifest.csv`가 있는 후보

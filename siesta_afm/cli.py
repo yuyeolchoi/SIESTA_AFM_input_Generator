@@ -409,6 +409,15 @@ def build_parser() -> argparse.ArgumentParser:
     _add_ordering_controls(enumerate_parser)
     enumerate_parser.add_argument("--methods", required=True)
     enumerate_parser.add_argument("--n-configs", type=int, default=8)
+    enumerate_parser.add_argument(
+        "--moment-sweep",
+        nargs="+",
+        metavar="SPEC",
+        help=(
+            "sweep moment magnitudes, for example "
+            "'Co@6=0.0,1.0' 'Ni=1.0,2.0'"
+        ),
+    )
     enumerate_parser.add_argument("--output-dir", required=True)
     enumerate_parser.add_argument("--keep-global-spin-inversion", action="store_true")
     enumerate_parser.add_argument(
@@ -752,18 +761,21 @@ def _cmd_enumerate(args: argparse.Namespace) -> int:
         _moment_values(args),
         args.n_configs,
         args.output_dir,
+        moment_sweep=args.moment_sweep,
         keep_global_spin_inversion=args.keep_global_spin_inversion,
         symmetry_dedup=args.symmetry_dedup,
         symprec=args.symprec,
         site_comments=args.site_comments,
         **_workflow_kwargs(args),
     )
-    shortfall_notice = (
-        f"requested {args.n_configs}, but only {len(result.manifest)} distinct "
-        "patterns were found."
-    )
+    shortfall_notice = None
+    if args.moment_sweep is None:
+        shortfall_notice = (
+            f"requested {args.n_configs}, but only {len(result.manifest)} distinct "
+            "patterns were found."
+        )
     for warning in result.notices:
-        if warning == shortfall_notice:
+        if shortfall_notice is not None and warning == shortfall_notice:
             continue
         print(f"WARNING:\n{warning}", file=sys.stderr)
     print(
@@ -772,7 +784,7 @@ def _cmd_enumerate(args: argparse.Namespace) -> int:
     )
     for failure in result.failures:
         print(f"WARNING: skipped {failure}", file=sys.stderr)
-    if shortfall_notice in result.notices:
+    if shortfall_notice is not None and shortfall_notice in result.notices:
         print(f"WARNING: {shortfall_notice}", file=sys.stderr)
     return 0
 

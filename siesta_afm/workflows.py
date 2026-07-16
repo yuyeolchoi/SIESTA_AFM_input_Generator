@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
+from itertools import product
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -12,6 +13,7 @@ from .fdf_writer import render_dm_init_spin
 from .magnetic_sites import (
     built_in_element_moments,
     parse_atom_indices,
+    parse_moment_arguments,
     resolve_moments,
     resolve_moments_with_sources,
     select_magnetic_sites,
@@ -51,6 +53,8 @@ ENUMERATION_METHODS = (
     "by-coordination",
     "frustrated",
 )
+
+ENUMERATION_CONFIG_LIMIT = 200
 
 
 @dataclass(slots=True)
@@ -483,6 +487,7 @@ def enumerate_candidates(
     n_configs: int,
     output_dir: str | Path,
     *,
+    moment_sweep: Sequence[str] | str | None = None,
     keep_global_spin_inversion: bool = False,
     symmetry_dedup: bool = False,
     symprec: float = 1e-3,
@@ -506,6 +511,24 @@ def enumerate_candidates(
     unknown = [method for method in normalized_methods if method not in allowed]
     if unknown:
         raise ValueError(f"unsupported enumeration method: {unknown[0]}")
+
+    if moment_sweep is not None:
+        return _enumerate_candidates_with_moment_sweep(
+            structure,
+            magnetic_species,
+            normalized_methods,
+            moment,
+            moment_sweep,
+            n_configs,
+            output_dir,
+            keep_global_spin_inversion=keep_global_spin_inversion,
+            symmetry_dedup=symmetry_dedup,
+            symprec=symprec,
+            site_comments=site_comments,
+            coordination_labels=coordination_labels,
+            seed_offset=seed_offset,
+            **workflow_kwargs,
+        )
 
     magnetic_symmetry_permutations: list[tuple[int, ...]] | None = None
     if symmetry_dedup:
@@ -624,6 +647,297 @@ def enumerate_candidates(
             f"requested {n_configs}, but only {len(manifest)} distinct patterns "
             "were found."
         )
+    return EnumerationResult(
+        manifest=manifest,
+        failures=failures,
+        notices=notices,
+        written_files=written_files,
+        manifest_path=manifest_path,
+    )
+
+
+def _moment_sweep_items(values: Sequence[str] | str) -> list[str]:
+    source = [values] if isinstance(values, str) else list(values)
+    return [
+        item
+        for value in source
+        for item in str(value).split()
+        if item
+    ]
+
+
+def _parse_moment_sweep(
+    moment: Sequence[str] | str | None,
+    moment_sweep: Sequence[str] | str,
+) -> list[tuple[str, str | None, list[float]]]:
+    """Return ``(display target, element, values)`` sweep definitions."""
+
+    targets: list[tuple[str, str | None, list[float]]] = []
+    seen_targets: set[str] = set()
+    for item in _moment_sweep_items(moment_sweep):
+        has_target = "=" in item
+        if has_target:
+            raw_target, raw_values = item.split("=", 1)
+            raw_target = raw_target.strip()
+        else:
+            raw_target, raw_values = "", item
+        value_texts = raw_values.split(",")
+        if (
+            (has_target and not raw_target)
+            or not raw_values
+            or any(not value.strip() for value in value_texts)
+        ):
+            raise ValueError(f"invalid --moment-sweep specification: {item}")
+
+        values: list[float] = []
+        target_name: str | None = None
+        target_key: str | None = None
+        element: str | None = None
+        for value_text in value_texts:
+            specification = (
+                f"{raw_target}={value_text.strip()}"
+                if raw_target
+                else value_text.strip()
+            )
+            try:
+                global_value, by_element, by_coordination = parse_moment_arguments(
+                    specification
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"invalid --moment-sweep specification: {item}: {exc}"
+                ) from exc
+            if global_value is not None:
+                current_name = "global"
+                current_key = "global"
+                current_element = None
+                parsed_value = global_value
+            elif by_element:
+                current_element, parsed_value = next(iter(by_element.items()))
+                current_name = raw_target
+                current_key = current_element
+            else:
+                (current_element, coordination), parsed_value = next(
+                    iter(by_coordination.items())
+                )
+                element_name = raw_target.split("@", 1)[0].strip()
+                current_name = f"{element_name}@{coordination}"
+                current_key = f"{current_element}@{coordination}"
+            if target_key is None:
+                target_name = current_name
+                target_key = current_key
+                element = current_element
+            values.append(parsed_value)
+
+        assert target_name is not None and target_key is not None
+        if target_key in seen_targets:
+            raise ValueError(f"duplicate --moment-sweep target: {target_name}")
+        seen_targets.add(target_key)
+        targets.append((target_name, element, values))
+
+    if not targets:
+        raise ValueError("--moment-sweep requires at least one specification")
+
+    if moment is not None:
+        global_moment, by_element, by_coordination = parse_moment_arguments(moment)
+        moment_elements = set(by_element) | {
+            element for element, _ in by_coordination
+        }
+        for target_name, element, _ in targets:
+            overlaps = (
+                target_name == "global" and global_moment is not None
+            ) or (element is not None and element in moment_elements)
+            if overlaps:
+                raise ValueError(
+                    f"--moment and --moment-sweep both specify {target_name}; "
+                    "an element may only be supplied by one of them"
+                )
+    return targets
+
+
+def _combined_moment_values(
+    moment: Sequence[str] | str | None,
+    sweep_values: Sequence[str],
+) -> list[str]:
+    if moment is None:
+        return list(sweep_values)
+    if isinstance(moment, str):
+        baseline = [item for item in moment.replace(",", " ").split() if item]
+    else:
+        baseline = list(moment)
+    return [*baseline, *sweep_values]
+
+
+def _enumerate_candidates_with_moment_sweep(
+    structure: Structure,
+    magnetic_species: Sequence[str],
+    normalized_methods: Sequence[str],
+    moment: Sequence[str] | str | None,
+    moment_sweep: Sequence[str] | str,
+    n_configs: int,
+    output_dir: str | Path,
+    *,
+    keep_global_spin_inversion: bool,
+    symmetry_dedup: bool,
+    symprec: float,
+    site_comments: bool,
+    coordination_labels: Sequence[tuple[str, int, str]],
+    seed_offset: int,
+    **workflow_kwargs: Any,
+) -> EnumerationResult:
+    targets = _parse_moment_sweep(moment, moment_sweep)
+    combination_count = 1
+    for _, _, values in targets:
+        combination_count *= len(values)
+    requested_count = combination_count * n_configs
+    if requested_count > ENUMERATION_CONFIG_LIMIT:
+        raise ValueError(
+            f"moment sweep combinations ({combination_count}) × --n-configs "
+            f"({n_configs}) = {requested_count} exceeds the limit of "
+            f"{ENUMERATION_CONFIG_LIMIT} configurations"
+        )
+
+    magnetic_symmetry_permutations: list[tuple[int, ...]] | None = None
+    if symmetry_dedup:
+        symmetry_indices = select_magnetic_sites(
+            structure,
+            magnetic_species,
+            exclude_atoms=workflow_kwargs.get("exclude_atoms"),
+            adsorbate_indices=workflow_kwargs.get("adsorbate_indices"),
+        )
+        full_permutations = structure_symmetry_permutations(
+            structure, symprec=symprec
+        )
+        magnetic_symmetry_permutations = _project_symmetry_permutations(
+            full_permutations, symmetry_indices
+        )
+
+    destination = Path(output_dir)
+    destination.mkdir(parents=True, exist_ok=True)
+    manifest: list[dict[str, object]] = []
+    failures: list[str] = []
+    notices: list[str] = []
+    written_files: list[Path] = []
+    value_sets = [values for _, _, values in targets]
+    max_attempts = max(n_configs * 20, len(normalized_methods))
+    for combination_index, combination in enumerate(product(*value_sets), start=1):
+        sweep_columns = {
+            f"moment_{target_name}": value
+            for (target_name, _, _), value in zip(targets, combination)
+        }
+        sweep_specs = [
+            str(value) if target_name == "global" else f"{target_name}={value}"
+            for (target_name, _, _), value in zip(targets, combination)
+        ]
+        combination_moment = _combined_moment_values(moment, sweep_specs)
+        combination_label = ", ".join(
+            f"{name}={value}" for name, value in sweep_columns.items()
+        )
+        seen: set[tuple[int, ...]] = set()
+        combination_rows = 0
+        for attempt in range(max_attempts):
+            if combination_rows >= n_configs:
+                break
+            method = normalized_methods[attempt % len(normalized_methods)]
+            try:
+                method_workflow_kwargs = dict(workflow_kwargs)
+                if method != "layer":
+                    method_workflow_kwargs["layer_per_species"] = False
+                indices, assignment, spins = generate_assignment(
+                    structure,
+                    magnetic_species,
+                    method,
+                    combination_moment,
+                    seed=seed_offset + attempt,
+                    **method_workflow_kwargs,
+                )
+            except (ValueError, NonBipartiteError) as exc:
+                message = (
+                    f"m{combination_index} ({combination_label}): "
+                    f"{method}: {exc}"
+                )
+                if message not in failures:
+                    failures.append(message)
+                continue
+            apply_coordination_labels(
+                structure, indices, assignment, coordination_labels
+            )
+            key = _canonical_pattern(
+                assignment.signs,
+                keep_global_spin_inversion,
+                magnetic_symmetry_permutations,
+            )
+            if key in seen:
+                continue
+            try:
+                graph, _, _ = build_neighbor_graph(
+                    structure,
+                    indices,
+                    workflow_kwargs.get("cutoff", "auto"),
+                    neighbor_shell=workflow_kwargs.get("neighbor_shell", 1),
+                )
+            except ValueError as exc:
+                message = (
+                    f"m{combination_index} ({combination_label}): "
+                    f"{method}: {exc}"
+                )
+                if message not in failures:
+                    failures.append(message)
+                continue
+            score = (
+                sum(
+                    assignment.signs[left] * assignment.signs[right] < 0
+                    for left, right in graph.edges
+                )
+                / graph.number_of_edges()
+                if graph.number_of_edges()
+                else 0.0
+            )
+            seen.add(key)
+            combination_rows += 1
+            config_id = f"{len(manifest) + 1:03d}"
+            file_name = f"afm_{config_id}_m{combination_index}.fdf"
+            text = render_dm_init_spin(
+                spins,
+                method=assignment.method,
+                magnetic_species=magnetic_species,
+                metadata=assignment.metadata,
+                structure=structure,
+                site_comments=site_comments,
+            )
+            spin_path = destination / file_name
+            spin_path.write_text(text, encoding="utf-8")
+            written_files.append(spin_path)
+            manifest.append(
+                {
+                    "config_id": config_id,
+                    "method": assignment.method,
+                    **sweep_columns,
+                    "n_up": assignment.n_up,
+                    "n_down": assignment.n_down,
+                    "net_spin": sum(spins.values()),
+                    "afm_score": score,
+                    "file": file_name,
+                }
+            )
+            for warning in assignment.warnings:
+                if warning not in notices:
+                    notices.append(warning)
+        if combination_rows < n_configs:
+            notices.append(
+                f"moment sweep m{combination_index} ({combination_label}): requested "
+                f"{n_configs}, but only {combination_rows} distinct patterns were found."
+            )
+
+    if not manifest:
+        detail = "\n".join(failures) if failures else "no distinct patterns"
+        raise ValueError(f"no AFM configurations could be generated:\n{detail}")
+
+    manifest_path = destination / "manifest.csv"
+    with manifest_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(manifest[0]))
+        writer.writeheader()
+        writer.writerows(manifest)
     return EnumerationResult(
         manifest=manifest,
         failures=failures,

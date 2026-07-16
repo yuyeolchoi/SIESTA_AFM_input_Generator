@@ -384,12 +384,23 @@ siesta-afm collect-results siesta_jobs
 
 `enumerate` is appropriate for topologically different arrangements such as
 `--methods by-coordination,layer,frustrated`. It varies method and attempt seed;
-it does **not** sweep moment magnitudes or Hubbard U. It removes identical
-patterns and, by default, identifies a global up/down inversion as the same
-candidate. Such an inversion has the same energy in a collinear calculation by
-time-reversal symmetry, so it normally should not be run separately;
-`--keep-global-spin-inversion` is available only when both conventions are
-specifically needed.
+`--moment-sweep "Co@6=0.0,1.0" "Ni=1.0,2.0"` additionally runs the requested
+number of patterns for every Cartesian product of those moment values. The
+value-list syntax extends the existing global, `Element`, and `Element@CN`
+moment forms. Elements absent from the sweep retain their `--moment` values;
+specifying the same element in both options is an error. Sweep files include an
+`m1`, `m2`, ... combination suffix, and their manifest rows add columns such as
+`moment_Co@6` and `moment_Ni`. The product of the number of combinations and
+`--n-configs` is limited to 200 configurations.
+
+Hubbard U is intentionally not sweepable by `enumerate`: it does not affect
+`DM.InitSpin` files, so U sweeps belong to `make-input`.
+
+Enumeration removes identical patterns and, by default, identifies a global
+up/down inversion as the same candidate. Such an inversion has the same energy
+in a collinear calculation by time-reversal symmetry, so it normally should
+not be run separately; `--keep-global-spin-inversion` is available only when
+both conventions are specifically needed.
 
 For a fully periodic structure, `enumerate --symmetry-dedup` also identifies
 patterns related by crystallographic symmetry. This opt-in mode requires the
@@ -410,10 +421,11 @@ config_id,method,n_up,n_down,net_spin,afm_score,file
 Each row describes one spin file; use labels such as `by-coordination-ls` and
 `by-coordination-hs` in `method`, and preserve or recompute the counts, net spin,
 and AFM score for that file. `prepare-array` can then patch all of them into the
-same base input. A Hubbard-U sweep is different: because U belongs to the base
-calculation settings, make a separate base input and job array for each U. For
-per-atom oxidation-state assignments, `--site-moment-file` is safer than relying
-on coordination alone.
+same base input. Moment-sweep manifests retain these base columns and insert one
+`moment_<target>` column per swept target. A Hubbard-U sweep is different:
+because U belongs to the base calculation settings, make a separate base input
+and job array for each U. For per-atom oxidation-state assignments,
+`--site-moment-file` is safer than relying on coordination alone.
 
 `collect-results` reads energy, final net spin, per-atom Mulliken/Hirshfeld spin, sign-retention fraction, collapse, and convergence markers from the common SIESTA `.out`/`.log` representations in each folder and writes `results.csv`. Different SIESTA versions may use different output wording, which can require extending the regular expressions.
 
@@ -424,11 +436,13 @@ initial states by total energy; it is not required to generate a single SIESTA
 input. It exposes the candidate, job-preparation, and result stages described
 above without changing their file formats. In `Candidates`,
 choose one or more methods and an output directory; the current magnetization
-table supplies `--magnetic-species` and `--moment`, and the generated rows plus
-all skipped-method warnings are shown in the tab. When using `manual-groups`,
-select its existing group file in the same panel. For a fully periodic input,
-the default-off `Symmetry-aware dedup` checkbox enables the same spglib-backed
-candidate collapsing as the CLI. `Prepare jobs` requires an
+table supplies `--magnetic-species` and the nonswept `--moment` values. The
+optional `Moment sweep` field accepts the same space-separated specifications
+as the CLI; leave it empty to retain the original single-moment behavior. The
+generated rows plus all skipped-method warnings are shown in the tab. When
+using `manual-groups`, select its existing group file in the same panel. For a
+fully periodic input, the default-off `Symmetry-aware dedup` checkbox enables
+the same spglib-backed candidate collapsing as the CLI. `Prepare jobs` requires an
 explicit, already saved complete FDF from `Build complete SIESTA input
 (make-input)...`, a candidate directory containing `manifest.csv`, and an
 output directory. It shows the resulting `folders.list` entries.

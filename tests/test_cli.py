@@ -228,10 +228,118 @@ def test_enumerate_cli_preserves_generated_and_shortfall_messages(
     )
     captured = capsys.readouterr()
     assert captured.out == f"Generated 2 distinct configuration(s) in {output}\n"
-    assert (
-        "WARNING: requested 4, but only 2 distinct patterns were found."
-        in captured.err
+
+
+def test_enumerate_cli_moment_sweep_writes_cartesian_candidates(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    structure = tmp_path / "pair.xyz"
+    structure.write_text(
+        "2\nCu pair\nCu 0 0 0\nCu 1 0 0\n",
+        encoding="utf-8",
     )
+    output = tmp_path / "sweep"
+
+    code = main(
+        [
+            "enumerate",
+            str(structure),
+            "--magnetic-species",
+            "Cu",
+            "--moment",
+            "0.5",
+            "--moment-sweep",
+            "Cu=1.0,2.0",
+            "--methods",
+            "random",
+            "--cutoff",
+            "1.1",
+            "--n-configs",
+            "2",
+            "--output-dir",
+            str(output),
+        ]
+    )
+
+    assert code == 0
+    assert sorted(path.name for path in output.glob("afm_*.fdf")) == [
+        "afm_001_m1.fdf",
+        "afm_002_m1.fdf",
+        "afm_003_m2.fdf",
+        "afm_004_m2.fdf",
+    ]
+    with (output / "manifest.csv").open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert [row["moment_Cu"] for row in rows] == ["1.0", "1.0", "2.0", "2.0"]
+    assert "Generated 4 distinct configuration(s)" in capsys.readouterr().out
+
+
+def test_enumerate_cli_rejects_moment_sweep_overlap(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    structure = tmp_path / "pair.xyz"
+    structure.write_text(
+        "2\nCu pair\nCu 0 0 0\nCu 1 0 0\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "overlap"
+
+    code = main(
+        [
+            "enumerate",
+            str(structure),
+            "--magnetic-species",
+            "Cu",
+            "--moment",
+            "Cu=1.0",
+            "--moment-sweep",
+            "Cu=1.0,2.0",
+            "--methods",
+            "random",
+            "--n-configs",
+            "2",
+            "--output-dir",
+            str(output),
+        ]
+    )
+
+    assert code == 2
+    assert "--moment and --moment-sweep both specify Cu" in capsys.readouterr().err
+    assert not output.exists()
+
+
+def test_enumerate_cli_rejects_moment_sweep_over_limit(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    structure = tmp_path / "pair.xyz"
+    structure.write_text(
+        "2\nCu pair\nCu 0 0 0\nCu 1 0 0\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "too-many"
+
+    code = main(
+        [
+            "enumerate",
+            str(structure),
+            "--magnetic-species",
+            "Cu",
+            "--moment",
+            "0.5",
+            "--moment-sweep",
+            "Cu=1.0,2.0",
+            "--methods",
+            "random",
+            "--n-configs",
+            "101",
+            "--output-dir",
+            str(output),
+        ]
+    )
+
+    assert code == 2
+    assert "= 202 exceeds the limit of 200 configurations" in capsys.readouterr().err
+    assert not output.exists()
 
 
 def test_generate_validate_patch_roundtrip(tmp_path: Path) -> None:

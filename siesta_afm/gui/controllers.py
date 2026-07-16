@@ -397,7 +397,10 @@ def moment_text_from_rows(
 
 
 def batch_moment_text_from_rows(
-    rows: Sequence[MagnetizationRow], methods: Sequence[str]
+    rows: Sequence[MagnetizationRow],
+    methods: Sequence[str],
+    *,
+    moment_sweep: Sequence[str] | str | None = None,
 ) -> str | None:
     """Return moment specifications usable by every selected batch method.
 
@@ -406,10 +409,33 @@ def batch_moment_text_from_rows(
     more specific ``Element@CN`` values used by ``by-coordination``.
     """
 
-    element_moments = moment_text_from_rows(rows, "layer")
+    sweep_items = (
+        [moment_sweep]
+        if isinstance(moment_sweep, str)
+        else list(moment_sweep or ())
+    )
+    swept_elements: set[str] = set()
+    global_sweep = False
+    for sweep_item in sweep_items:
+        for specification in str(sweep_item).split():
+            if "=" not in specification:
+                global_sweep = True
+                continue
+            target = specification.split("=", 1)[0].split("@", 1)[0].strip()
+            if target:
+                swept_elements.add(target.lower())
+    baseline_rows = [
+        row
+        for row in rows
+        if not global_sweep and row.element.lower() not in swept_elements
+    ]
+
+    element_moments = moment_text_from_rows(baseline_rows, "layer")
     if "by-coordination" not in methods:
         return element_moments
-    coordination_moments = moment_text_from_rows(rows, "by-coordination")
+    coordination_moments = moment_text_from_rows(
+        baseline_rows, "by-coordination"
+    )
     if all(method == "by-coordination" for method in methods):
         return coordination_moments
     if not coordination_moments or coordination_moments == element_moments:
@@ -961,6 +987,7 @@ def run_candidate_generation(
     n_configs: int,
     output_dir: str | Path,
     *,
+    moment_sweep: Sequence[str] | str | None = None,
     keep_global_spin_inversion: bool = False,
     symmetry_dedup: bool = False,
     symprec: float = 1e-3,
@@ -978,6 +1005,7 @@ def run_candidate_generation(
         moment,
         n_configs,
         output_dir,
+        moment_sweep=moment_sweep,
         keep_global_spin_inversion=keep_global_spin_inversion,
         symmetry_dedup=symmetry_dedup,
         symprec=symprec,

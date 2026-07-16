@@ -219,6 +219,7 @@ class DesktopApp:
         self.batch_n_configs_var = tk.StringVar(value="8")
         self.batch_keep_inversion_var = tk.BooleanVar(value=False)
         self.batch_symmetry_dedup_var = tk.BooleanVar(value=False)
+        self.batch_moment_sweep_var = tk.StringVar(value="")
         self.candidate_output_var = tk.StringVar(value="")
         self.batch_group_file_var = tk.StringVar(value="")
         self.base_input_var = tk.StringVar(value="")
@@ -1013,17 +1014,26 @@ class DesktopApp:
             command=self._generate_candidates,
         )
         self.generate_candidates_button.grid(row=1, column=6, pady=(3, 0))
-        ttk.Label(controls, text="Manual groups file").grid(
+        ttk.Label(controls, text="Moment sweep").grid(
             row=2, column=0, sticky="w", pady=(3, 0)
         )
+        ttk.Entry(controls, textvariable=self.batch_moment_sweep_var).grid(
+            row=2, column=1, columnspan=5, sticky="ew", padx=4, pady=(3, 0)
+        )
+        ttk.Label(controls, text="e.g. Co@6=0.0,1.0 Ni=1.0,2.0").grid(
+            row=2, column=6, sticky="w", pady=(3, 0)
+        )
+        ttk.Label(controls, text="Manual groups file").grid(
+            row=3, column=0, sticky="w", pady=(3, 0)
+        )
         ttk.Entry(controls, textvariable=self.batch_group_file_var).grid(
-            row=2, column=1, columnspan=4, sticky="ew", padx=4, pady=(3, 0)
+            row=3, column=1, columnspan=4, sticky="ew", padx=4, pady=(3, 0)
         )
         ttk.Button(
             controls,
             text="Browse...",
             command=self._choose_batch_group_file,
-        ).grid(row=2, column=5, padx=(0, 4), pady=(3, 0))
+        ).grid(row=3, column=5, padx=(0, 4), pady=(3, 0))
 
         table_frame = ttk.Frame(parent)
         table_frame.grid(row=3, column=0, sticky="nsew")
@@ -2000,13 +2010,19 @@ class DesktopApp:
                 raise ValueError("select a candidate output directory")
             structure = read_structure(self.structure_path, slab=self.slab_var.get())
             species = magnetic_species_from_rows(self.magnetization_rows)
+            moment_sweep = self.batch_moment_sweep_var.get().strip() or None
             result = run_candidate_generation(
                 structure,
                 species,
                 methods,
-                batch_moment_text_from_rows(self.magnetization_rows, methods),
+                batch_moment_text_from_rows(
+                    self.magnetization_rows,
+                    methods,
+                    moment_sweep=moment_sweep,
+                ),
                 int(self.batch_n_configs_var.get()),
                 output_dir,
+                moment_sweep=moment_sweep,
                 keep_global_spin_inversion=self.batch_keep_inversion_var.get(),
                 site_comments=self.site_comments_var.get(),
                 coordination_labels=coordination_labels_from_rows(
