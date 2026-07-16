@@ -116,6 +116,7 @@ and [Materials Project U-value methodology](https://docs.materialsproject.org/me
 - `graph-coloring`: uses DSATUR proper coloring to build up to k sublattice candidates and maps a collinear spin to each color.
 - `propagation-vector`: sets the sign from `sign(cos(2π q·r + phase))`.
 - `manual-groups`: uses `--up-atoms`, `--down-atoms`, or a YAML `--group-file`.
+- `manual-spins`: directly preserves signed per-atom values from `--spin-values` or `--spin-values-file`; it is intentionally excluded from candidate enumeration.
 - `by-species`: splits distinct-element sublattices with `--up-species` and `--down-species`.
 - `by-coordination`: splits Td/Oh sublattices by each magnetic atom's first anion-shell coordination number.
 - `random`: produces reproducible random initial signs with `--seed`. This is not a physical magnetic-ordering model.
@@ -245,6 +246,53 @@ You can use the input file's PBC or override it explicitly.
 ```
 
 Because magnetic elements must be selected with `--magnetic-species`, adsorbates such as C, H, O, Cs are automatically excluded from the magnetic graph. Additional exclusion ranges are specified with `--exclude-atoms 217-228` or `--adsorbate-indices 217,218,219`.
+
+## Cell-free molecular XYZ workflows
+
+Molecular XYZ inputs, including `examples/Fe_CO5_homogeneous_catalyst.xyz`, are
+read as nonperiodic structures with no cell. Do not pass `--slab` or
+`--periodic-axes` unless the input actually contains a meaningful nonsingular
+cell. `analyze`, `validate`, `plot`, the GUI, and Cartesian generation methods
+work directly with the XYZ atom order. This includes `alternating-index`,
+`random`, Cartesian `layer`, `checkerboard`, neighbor graph methods,
+`graph-coloring`, `manual-groups`, `by-species`, `by-coordination`, and
+`manual-spins` when their usual method-specific inputs are valid.
+
+Cell-free XYZ cannot use methods that explicitly request fractional
+coordinates: fractional `propagation-vector` (including A/C/G presets) and
+`layer --fractional-layers` report a nonsingular-cell error. A propagation
+vector can be interpreted in Cartesian coordinates with
+`--cartesian-coordinates`, but only use that form when it matches the intended
+molecular model. Crystallographic symmetry deduplication likewise belongs to
+structures with a cell.
+
+For a small complex, `manual-spins` assigns signed moments directly to
+one-based atom indices:
+
+```bash
+siesta-afm generate examples/Fe_CO5_homogeneous_catalyst.xyz \
+  --magnetic-species Fe --method manual-spins \
+  --spin-values 1=+2.0 --output fe_co5_spin.fdf
+```
+
+The value above is an input-format demonstration, not a claim about the
+ground-state spin of Fe(CO)5. For several magnetic centers, use syntax such as
+`--spin-values 1=+4.0 7=-2.0 9=+1.0`. Every selected magnetic atom must be
+listed unless `--fill-unspecified-zero` is passed. A CSV alternative uses the
+distinct signed schema below and is selected with `--spin-values-file`:
+
+```csv
+atom_index,spin
+1,+4.0
+7,-2.0
+9,+1.0
+```
+
+`--spin-values` and `--spin-values-file` are mutually exclusive, and an index
+whose element is not selected by `--magnetic-species` is an error. This signed
+path is deliberately separate from `--site-moment-file`: the established site
+moment file supplies magnitudes, so a negative `moment` there still has its
+sign ignored and the ordering method determines the sign.
 
 ## Frustrated / non-bipartite graphs
 
@@ -421,6 +469,12 @@ Each `(Element, CN)` use checkbox is independent. Unchecking, for example, only
 Set that row's moment to `0.0`, or use `--exclude-atoms` / `--adsorbate-indices`
 for specific atom indices, when those sites must be fully excluded.
 
+When `manual-spins` is selected, structures with at most 60 atoms show a second
+atom-order table (`atom index | element | spin`) whose signed spin cells are
+edited by double-clicking. Edits use the normal debounced live-preview path and
+preserve the current 3D camera. For larger structures the table is replaced by
+an `atom_index,spin` CSV selector to avoid hundreds of GUI rows.
+
 Only settings relevant to the selected method are displayed. The input and result
 areas are separated by a draggable pane, and short labels plus help text keep input
 widgets readable at the default window size. Parameter changes still use the 400 ms
@@ -477,7 +531,7 @@ No input is ever sorted by element or by coordinate. The internal `ase_index` is
 6. Multiple AFM/FM initial states should be computed and compared by final total energy.
 7. The magnetic ground state can depend on the U value, basis, pseudopotential, and slab termination.
 
-The small structures in `examples/` are for confirming CLI behavior and do not substitute for a converged surface-calculation model. In particular, `NiCo2O4_311_slab.cif` is a multi-element input/output demo, not a real spinel structure with constructed Td/Oh coordination, so it must not be used as a `by-coordination` validation model; its Ni/Co-O distances intentionally exceed typical covalent-bond cutoffs, so `--show-bonds`/`Show bonds` will find few or no bonds on it. To try the element filter and bond lines on a physically realistic multi-element structure, use `examples/NiCo2O4_spinel_demo.cif` instead (the real Co3O4 spinel geometry from COD 1538531 with its eight tetrahedral Co sites relabeled Ni).
+The small structures in `examples/` are for confirming CLI behavior and do not substitute for a converged calculation model. `Fe_CO5_homogeneous_catalyst.xyz` is an idealized trigonal-bipyramidal molecular geometry for exercising the nonperiodic workflow. In particular, `NiCo2O4_311_slab.cif` is a multi-element input/output demo, not a real spinel structure with constructed Td/Oh coordination, so it must not be used as a `by-coordination` validation model; its Ni/Co-O distances intentionally exceed typical covalent-bond cutoffs, so `--show-bonds`/`Show bonds` will find few or no bonds on it. To try the element filter and bond lines on a physically realistic multi-element structure, use `examples/NiCo2O4_spinel_demo.cif` instead (the real Co3O4 spinel geometry from COD 1538531 with its eight tetrahedral Co sites relabeled Ni).
 
 ## Tests
 

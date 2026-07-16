@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from itertools import permutations
-from math import pi
+from math import isfinite, pi
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -968,6 +968,61 @@ def manual_groups_ordering(
         {one_based - 1: 1 for one_based in up}
         | {one_based - 1: -1 for one_based in down},
         "manual-groups",
+    )
+
+
+def manual_spins_ordering(
+    structure: Structure,
+    indices: Sequence[int],
+    spin_values: Mapping[int, float],
+    *,
+    fill_unspecified_zero: bool = False,
+) -> SpinAssignment:
+    """Assign signed moments supplied for one-based atom indices.
+
+    Unlike the established site-moment path, these values are direct signed
+    moments rather than magnitudes to be combined with method-derived signs.
+    """
+
+    expected = {index + 1 for index in indices}
+    supplied: dict[int, float] = {}
+    for raw_index, raw_value in spin_values.items():
+        one_based = int(raw_index)
+        if one_based != raw_index or not 1 <= one_based <= len(structure):
+            raise ValueError(f"manual spin atom index out of range: {raw_index}")
+        value = float(raw_value)
+        if not isfinite(value):
+            raise ValueError(
+                f"manual spin for atom {one_based} must be a finite number"
+            )
+        if one_based not in expected:
+            raise ValueError(
+                f"manual spin atom {one_based} is not selected by "
+                f"--magnetic-species (actual element: "
+                f"{structure.symbols[one_based - 1]})"
+            )
+        supplied[one_based] = value
+
+    missing = expected - set(supplied)
+    if missing and not fill_unspecified_zero:
+        one_based = min(missing)
+        raise ValueError(
+            f"manual spins omit magnetic atom {one_based} "
+            f"({structure.symbols[one_based - 1]}); specify it or pass "
+            "--fill-unspecified-zero"
+        )
+    direct_spins = {
+        one_based - 1: supplied.get(one_based, 0.0)
+        for one_based in sorted(expected)
+    }
+    signs = {
+        index: 1 if value > 0 else -1 if value < 0 else 0
+        for index, value in direct_spins.items()
+    }
+    return SpinAssignment(
+        signs,
+        "manual-spins",
+        {"spin_values": direct_spins, "fill_unspecified_zero": fill_unspecified_zero},
     )
 
 

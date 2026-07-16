@@ -21,6 +21,10 @@ so tests verify that the final reported state is selected.
 geometry for exercising GUI coordination/moment routing. Its distances are not
 physical and it must not be copied into `examples/` or used as a research model.
 
+`FeN6_molecule.xyz` is a cell-free octahedral FeN6 toy molecule used to lock
+the nonperiodic generation-method matrix and the small-system GUI spin table.
+It is a software fixture, not a chemically complete catalyst model.
+
 `NiCo2O4_311_pristine.cif` is a 252-atom relaxed slab regression structure used
 to preserve the observed Co/Ni layer-parity warning and surface coordination
 distributions from a real non-orthogonal NiCo2O4 (311) calculation.

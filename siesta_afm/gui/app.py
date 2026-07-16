@@ -13,6 +13,7 @@ from ..visualize import create_spin_figure, element_spin_counts
 from .controllers import (
     GenerationParams,
     GenerationResult,
+    ManualSpinRow,
     MagnetizationRow,
     SpinFileResult,
     _AUTO_SHOW_BONDS_MAX_ATOMS,
@@ -22,6 +23,7 @@ from .controllers import (
     _COLOR_MODES,
     _GUI_INSTALL_HINT,
     _LEFT_PANEL_MIN_WIDTH,
+    _MANUAL_SPINS_MAX_ATOMS,
     _METHODS,
     _NEAR_GROUND_ENERGY_WINDOW_EV,
     _PANE_SASH_MARGIN,
@@ -42,15 +44,18 @@ from .controllers import (
     export_spin_block,
     export_structure_with_moments,
     load_spin_file,
+    manual_spin_rows_from_structure,
     magnetic_species_from_rows,
     moment_text_from_rows,
     prepare_job_folders,
+    parse_spin_values,
     results_table_rows,
     run_candidate_generation,
     run_generation,
     safe_magnetization_rows_from_structure,
     site_assignment_rows,
     site_assignment_summary,
+    spin_values_from_rows,
     toggle_magnetization_use,
     workflow_kwargs_from_inputs,
 )
@@ -133,6 +138,7 @@ class DesktopApp:
         self._reset_camera = True
         self._traces_ready = False
         self.magnetization_rows: list[MagnetizationRow] = []
+        self.manual_spin_rows: list[ManualSpinRow] = []
         self._cell_editor: Any | None = None
         self.control_inputs: list[Any] = []
         self.method_option_frames: dict[str, Any] = {}
@@ -174,6 +180,8 @@ class DesktopApp:
         self.method_var = tk.StringVar(value="layer")
         self.spin_mode_var = tk.StringVar(value="collinear")
         self.site_moment_file_var = tk.StringVar(value="")
+        self.spin_values_file_var = tk.StringVar(value="")
+        self.fill_unspecified_zero_var = tk.BooleanVar(value=False)
         self.site_comments_var = tk.BooleanVar(value=True)
         self.cli_options_var = tk.StringVar(value="--magnetic-species")
         self.axis_var = tk.StringVar(value="z")
@@ -487,6 +495,77 @@ class DesktopApp:
         random_frame = self._option_frame(panel, row, "Random options")
         self._entry_row(random_frame, 0, "Seed", self.seed_var)
         self.method_option_frames["random"] = random_frame
+        row += 1
+
+        manual_frame = self._option_frame(panel, row, "Direct atom spins")
+        manual_frame.columnconfigure(0, weight=1)
+        self.manual_spins_table_frame = self.ttk.Frame(manual_frame)
+        self.manual_spins_table_frame.grid(
+            row=0, column=0, columnspan=2, sticky="nsew"
+        )
+        self.manual_spins_table_frame.columnconfigure(0, weight=1)
+        self.manual_spins_table_frame.rowconfigure(0, weight=1)
+        manual_columns = ("atom", "element", "spin")
+        self.manual_spins_tree = self.ttk.Treeview(
+            self.manual_spins_table_frame,
+            columns=manual_columns,
+            show="headings",
+            height=8,
+            selectmode="browse",
+        )
+        for column, heading, width in (
+            ("atom", "atom index", 85),
+            ("element", "element", 75),
+            ("spin", "spin (μB)", 110),
+        ):
+            self.manual_spins_tree.heading(column, text=heading)
+            self.manual_spins_tree.column(
+                column, width=width, minwidth=width, anchor="center"
+            )
+        manual_scroll = self.ttk.Scrollbar(
+            self.manual_spins_table_frame,
+            orient="vertical",
+            command=self.manual_spins_tree.yview,
+        )
+        self.manual_spins_tree.configure(yscrollcommand=manual_scroll.set)
+        self.manual_spins_tree.grid(row=0, column=0, sticky="nsew")
+        manual_scroll.grid(row=0, column=1, sticky="ns")
+        self.manual_spins_tree.bind("<Double-1>", self._edit_manual_spin_cell)
+        self.ttk.Label(
+            self.manual_spins_table_frame,
+            text="Double-click a spin cell to enter a signed value.",
+            foreground="#666666",
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(3, 0))
+
+        self.manual_spins_file_frame = self.ttk.Frame(manual_frame)
+        self.manual_spins_file_frame.grid(
+            row=0, column=0, columnspan=2, sticky="ew"
+        )
+        self.manual_spins_file_frame.columnconfigure(0, weight=1)
+        self.ttk.Label(
+            self.manual_spins_file_frame,
+            text=(
+                f"Structures over {_MANUAL_SPINS_MAX_ATOMS} atoms use an "
+                "atom_index,spin CSV file."
+            ),
+            wraplength=450,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 3))
+        self.manual_spins_file_entry = self.ttk.Entry(
+            self.manual_spins_file_frame, textvariable=self.spin_values_file_var
+        )
+        self.manual_spins_file_entry.grid(row=1, column=0, sticky="ew")
+        self.control_inputs.append(self.manual_spins_file_entry)
+        self.ttk.Button(
+            self.manual_spins_file_frame,
+            text="Browse...",
+            command=self._choose_spin_values_file,
+        ).grid(row=1, column=1, padx=(4, 0))
+        self.ttk.Checkbutton(
+            manual_frame,
+            text="Fill unspecified magnetic atoms with 0",
+            variable=self.fill_unspecified_zero_var,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        self.method_option_frames["manual-spins"] = manual_frame
         row += 1
 
         row = self._combo_row(
@@ -1245,6 +1324,8 @@ class DesktopApp:
             active.append("graph-coloring")
         if method == "random":
             active.append("random")
+        if method == "manual-spins":
+            active.append("manual-spins")
         for name in active:
             self.method_option_frames[name].grid()
         if method == "neighbor-bipartite":
@@ -1257,6 +1338,7 @@ class DesktopApp:
         else:
             self.checker_tolerance_label.grid_remove()
             self.checker_tolerance_entry.grid_remove()
+        self._sync_manual_spins_display()
         self._sync_graph_spin_mode_state()
 
     def _sync_graph_spin_mode_state(self) -> None:
@@ -1287,9 +1369,62 @@ class DesktopApp:
                     row.role,
                 ),
             )
-        self.cli_options_var.set(
-            equivalent_cli_options(self.magnetization_rows, self.method_var.get())
+        self._update_equivalent_cli_options()
+
+    def _update_equivalent_cli_options(self) -> None:
+        method = self.method_var.get()
+        if method != "manual-spins":
+            self.cli_options_var.set(
+                equivalent_cli_options(self.magnetization_rows, method)
+            )
+            return
+        species = magnetic_species_from_rows(self.magnetization_rows)
+        parts = ["--magnetic-species", *species, "--method", "manual-spins"]
+        if (
+            self.current_structure is not None
+            and len(self.current_structure) <= _MANUAL_SPINS_MAX_ATOMS
+        ):
+            values = [
+                f"{row.atom_index}={row.spin}"
+                for row in self.manual_spin_rows
+                if row.spin.strip()
+            ]
+            if values:
+                parts.extend(("--spin-values", *values))
+        elif self.spin_values_file_var.get().strip():
+            parts.extend(
+                ("--spin-values-file", self.spin_values_file_var.get().strip())
+            )
+        if self.fill_unspecified_zero_var.get():
+            parts.append("--fill-unspecified-zero")
+        self.cli_options_var.set(" ".join(parts))
+
+    def _populate_manual_spins_tree(self) -> None:
+        for item in self.manual_spins_tree.get_children():
+            self.manual_spins_tree.delete(item)
+        for row in self.manual_spin_rows:
+            self.manual_spins_tree.insert(
+                "",
+                "end",
+                iid=str(row.atom_index),
+                values=(row.atom_index, row.element, row.spin),
+            )
+        self._update_equivalent_cli_options()
+
+    def _sync_manual_spins_display(self) -> None:
+        small_structure = (
+            self.current_structure is not None
+            and len(self.current_structure) <= _MANUAL_SPINS_MAX_ATOMS
         )
+        if self.method_var.get() == "manual-spins" and small_structure:
+            self.manual_spins_file_frame.grid_remove()
+            self.manual_spins_table_frame.grid()
+        elif self.method_var.get() == "manual-spins":
+            self.manual_spins_table_frame.grid_remove()
+            self.manual_spins_file_frame.grid()
+        else:
+            self.manual_spins_table_frame.grid_remove()
+            self.manual_spins_file_frame.grid_remove()
 
     def _edit_magnetization_cell(self, event: Any) -> None:
         item = self.magnetization_tree.identify_row(event.y)
@@ -1385,11 +1520,54 @@ class DesktopApp:
         editor.bind("<Escape>", lambda _event: close(save=False))
         editor.bind("<FocusOut>", lambda _event: close(save=True))
 
+    def _edit_manual_spin_cell(self, event: Any) -> None:
+        item = self.manual_spins_tree.identify_row(event.y)
+        column = self.manual_spins_tree.identify_column(event.x)
+        if not item or column != "#3":
+            return
+        row = self.manual_spin_rows[int(item) - 1]
+        bbox = self.manual_spins_tree.bbox(item, column)
+        if not bbox:
+            return
+        if self._cell_editor is not None:
+            self._cell_editor.destroy()
+        x, y, width, height = bbox
+        variable = self.tk.StringVar(value=row.spin)
+        editor = self.ttk.Entry(self.manual_spins_tree, textvariable=variable)
+        self._cell_editor = editor
+        editor.place(x=x, y=y, width=width, height=height)
+        editor.focus_set()
+
+        def close(*, save: bool) -> None:
+            if self._cell_editor is None:
+                return
+            value = variable.get().strip()
+            if save and value:
+                try:
+                    parse_spin_values([f"{row.atom_index}={value}"])
+                except ValueError as exc:
+                    self.status_var.set(str(exc))
+                    return
+            if save:
+                row.spin = value
+                self._populate_manual_spins_tree()
+                if self.viewing_spin_path is not None:
+                    self.viewing_spin_path = None
+                    self.mode_var.set("generation mode (spin-file view ended)")
+                self._schedule_live_update()
+            self._cell_editor.destroy()
+            self._cell_editor = None
+
+        editor.bind("<Return>", lambda _event: close(save=True))
+        editor.bind("<Escape>", lambda _event: close(save=False))
+        editor.bind("<FocusOut>", lambda _event: close(save=True))
+
     def _table_changed(self, *, refresh: bool = False) -> None:
         if refresh:
             self._refresh_magnetization_table()
         else:
             self._populate_magnetization_tree()
+            self._refresh_manual_spin_table()
         if self.viewing_spin_path is not None:
             self.viewing_spin_path = None
             self.mode_var.set("generation mode (spin-file view ended)")
@@ -1408,6 +1586,8 @@ class DesktopApp:
     def _install_traces(self) -> None:
         variables = (
             self.site_moment_file_var,
+            self.spin_values_file_var,
+            self.fill_unspecified_zero_var,
             self.site_comments_var,
             self.axis_var,
             self.layer_direction_var,
@@ -1607,6 +1787,9 @@ class DesktopApp:
             self._coordination_fallback = None
             self.magnetization_rows = []
             self._populate_magnetization_tree()
+            self.manual_spin_rows = []
+            self._populate_manual_spins_tree()
+            self._sync_manual_spins_display()
             return
         method = self.method_var.get()
         rows, self._coordination_fallback = safe_magnetization_rows_from_structure(
@@ -1620,6 +1803,24 @@ class DesktopApp:
             self.status_var.set(self._coordination_fallback)
         self.magnetization_rows = rows
         self._populate_magnetization_tree()
+        self._refresh_manual_spin_table()
+
+    def _refresh_manual_spin_table(self) -> None:
+        if self.current_structure is None:
+            self.manual_spin_rows = []
+        else:
+            defaults: dict[str, str] = {}
+            for row in self.magnetization_rows:
+                if row.use and row.value.strip():
+                    defaults.setdefault(row.element.lower(), row.value.strip())
+            self.manual_spin_rows = manual_spin_rows_from_structure(
+                self.current_structure,
+                magnetic_species_from_rows(self.magnetization_rows),
+                defaults,
+                existing_rows=self.manual_spin_rows,
+            )
+        self._populate_manual_spins_tree()
+        self._sync_manual_spins_display()
 
     def _choose_structure(self, *, schedule: bool = True) -> bool:
         path = self.deps.filedialog.askopenfilename(
@@ -1650,6 +1851,7 @@ class DesktopApp:
         self.mode_var.set("generation mode")
         self._reset_camera = True
         self.magnetization_rows = []
+        self.manual_spin_rows = []
         self._refresh_magnetization_table()
         self.status_var.set(
             self._coordination_fallback
@@ -1666,6 +1868,14 @@ class DesktopApp:
         )
         if path:
             self.site_moment_file_var.set(path)
+
+    def _choose_spin_values_file(self) -> None:
+        path = self.deps.filedialog.askopenfilename(
+            title="Open direct spin values CSV",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        )
+        if path:
+            self.spin_values_file_var.set(path)
 
     def _choose_candidate_output(self) -> None:
         path = self.deps.filedialog.askdirectory(title="Candidate output directory")
@@ -1851,7 +2061,11 @@ class DesktopApp:
         if not species:
             raise ValueError("select at least one magnetic element in the table")
         method = self.method_var.get()
-        moment = moment_text_from_rows(self.magnetization_rows, method)
+        moment = (
+            None
+            if method == "manual-spins"
+            else moment_text_from_rows(self.magnetization_rows, method)
+        )
         workflow_kwargs = self._workflow_kwargs(
             [method],
             seed_offset=(
@@ -1865,6 +2079,22 @@ class DesktopApp:
         workflow_kwargs.pop("symmetry_dedup")
         workflow_kwargs.pop("symprec")
         seed = workflow_kwargs.pop("seed_offset")
+        spin_values = None
+        spin_values_file = None
+        if method == "manual-spins":
+            workflow_kwargs["site_moment_file"] = None
+            if (
+                self.current_structure is not None
+                and len(self.current_structure) <= _MANUAL_SPINS_MAX_ATOMS
+            ):
+                spin_values = spin_values_from_rows(self.manual_spin_rows)
+            else:
+                spin_values_file = self.spin_values_file_var.get().strip() or None
+                if spin_values_file is None:
+                    raise ValueError(
+                        "manual-spins structures over "
+                        f"{_MANUAL_SPINS_MAX_ATOMS} atoms require a spin values CSV"
+                    )
         spin_mode = (
             self.spin_mode_var.get()
             if method == "graph-coloring"
@@ -1879,6 +2109,13 @@ class DesktopApp:
             method=method,
             spin_mode=spin_mode,
             moment=moment,
+            spin_values=spin_values,
+            spin_values_file=spin_values_file,
+            fill_unspecified_zero=(
+                self.fill_unspecified_zero_var.get()
+                if method == "manual-spins"
+                else False
+            ),
             site_comments=self.site_comments_var.get(),
             slab=self.slab_var.get(),
             coordination_labels=coordination_labels_from_rows(
@@ -1894,6 +2131,7 @@ class DesktopApp:
             return
         self._sync_cutoff_state()
         self._sync_graph_spin_mode_state()
+        self._update_equivalent_cli_options()
         if self.viewing_spin_path is not None:
             self.viewing_spin_path = None
             self.mode_var.set("generation mode (spin-file view ended)")

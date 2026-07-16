@@ -84,10 +84,15 @@ def test_gui_blank_moment_uses_defaults_and_site_comment_toggle() -> None:
 
 
 def test_gui_exposes_generation_methods_and_propagation_preset() -> None:
-    assert {"random", "by-species", "by-coordination", "graph-coloring"}.issubset(
-        gui._METHODS
-    )
-    assert set(gui._BATCH_METHODS) == set(gui._METHODS) | {
+    assert {
+        "random",
+        "by-species",
+        "by-coordination",
+        "graph-coloring",
+        "manual-spins",
+    }.issubset(gui._METHODS)
+    assert "manual-spins" not in gui._BATCH_METHODS
+    assert set(gui._BATCH_METHODS) == (set(gui._METHODS) - {"manual-spins"}) | {
         "manual-groups",
         "frustrated",
     }
@@ -102,6 +107,39 @@ def test_gui_exposes_generation_methods_and_propagation_preset() -> None:
     )
     assert result.assignment.metadata["afm_type"] == "G"
     assert result.report["number_of_magnetic_atoms"] == 4
+
+
+def test_manual_spin_controller_parsing_rows_and_molecular_generation(
+    tmp_path: Path,
+) -> None:
+    assert gui.parse_spin_values("1=+4.0 3=-2.0") == {1: 4.0, 3: -2.0}
+    with pytest.raises(ValueError, match="duplicate manual spin atom index: 1"):
+        gui.parse_spin_values(("1=4", "1=-4"))
+    csv_path = tmp_path / "spins.csv"
+    csv_path.write_text("atom_index,spin\n1,+3.0\n", encoding="utf-8")
+    assert gui.load_spin_values_file(csv_path) == {1: 3.0}
+
+    structure = read_structure(
+        ROOT / "examples" / "Fe_CO5_homogeneous_catalyst.xyz"
+    )
+    rows = gui.manual_spin_rows_from_structure(
+        structure, ("Fe",), {"Fe": "4.0"}
+    )
+    assert len(rows) == 11
+    assert (rows[0].atom_index, rows[0].element, rows[0].spin) == (1, "Fe", "4.0")
+    assert all(not row.spin for row in rows[1:])
+
+    result = gui.run_generation(
+        gui.GenerationParams(
+            structure_path=ROOT / "examples" / "Fe_CO5_homogeneous_catalyst.xyz",
+            magnetic_species=("Fe",),
+            method="manual-spins",
+            spin_values={1: -2.5},
+        )
+    )
+    assert result.assignment.method == "manual-spins"
+    assert result.spins == {0: -2.5}
+    assert parse_dm_init_spin(result.block) == [(1, -2.5)]
 
 
 def test_gui_controller_passes_graph_coloring_options(tmp_path: Path) -> None:
@@ -617,6 +655,76 @@ def test_default_gui_layout_keeps_visible_inputs_wide_enough(
         app.complete_input_action.invoke()
         assert exported == [destination]
     finally:
+        root.destroy()
+
+
+def test_manual_spins_gui_table_edit_preview_and_large_csv_switch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    assert gui._MANUAL_SPINS_MAX_ATOMS == 60
+    dependencies = gui._load_gui_dependencies()
+    try:
+        root = dependencies.tk.Tk()
+    except dependencies.tk.TclError:
+        pytest.skip("Tk display is unavailable")
+    app = None
+    try:
+        try:
+            root.attributes("-alpha", 0.0)
+        except dependencies.tk.TclError:
+            pass
+        app = gui.DesktopApp(root, dependencies)
+        monkeypatch.setattr(
+            app.deps.filedialog,
+            "askopenfilename",
+            lambda **_kwargs: str(ROOT / "tests" / "fixtures" / "FeN6_molecule.xyz"),
+        )
+        assert app._choose_structure(schedule=False)
+        app.method_var.set("manual-spins")
+        root.update()
+
+        assert app.manual_spins_table_frame.winfo_ismapped()
+        assert not app.manual_spins_file_frame.winfo_ismapped()
+        assert len(app.manual_spins_tree.get_children()) == 7
+        assert app.manual_spins_tree.item("1", "values") == ("1", "Fe", "4.0")
+
+        x, y, width, height = app.manual_spins_tree.bbox("1", "#3")
+        app._edit_manual_spin_cell(
+            SimpleNamespace(x=x + width // 2, y=y + height // 2)
+        )
+        assert app._cell_editor is not None
+        app._cell_editor.delete(0, "end")
+        app._cell_editor.insert(0, "-3.25")
+        app._cell_editor.event_generate("<Return>")
+        root.update()
+        app._generate(show_dialog=False)
+        assert app.current_result is not None
+        assert app.current_result.assignment.method == "manual-spins"
+        assert app.current_spins == {0: -3.25}
+
+        large = tmp_path / "large.xyz"
+        large.write_text(
+            "61\nlarge direct-spin GUI threshold fixture\n"
+            + "".join(f"Fe {index * 2.0} 0 0\n" for index in range(61)),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            app.deps.filedialog,
+            "askopenfilename",
+            lambda **_kwargs: str(large),
+        )
+        assert app._choose_structure(schedule=False)
+        root.update()
+        assert not app.manual_spins_table_frame.winfo_ismapped()
+        assert app.manual_spins_file_frame.winfo_ismapped()
+        assert "atom_index,spin CSV" in " ".join(
+            child.cget("text")
+            for child in app.manual_spins_file_frame.winfo_children()
+            if child.winfo_class() in {"TLabel", "Label"}
+        )
+    finally:
+        if app is not None and app.figure is not None:
+            app.figure.clear()
         root.destroy()
 
 

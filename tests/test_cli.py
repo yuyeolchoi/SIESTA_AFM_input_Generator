@@ -196,6 +196,73 @@ def test_generate_validate_patch_roundtrip(tmp_path: Path) -> None:
     assert patched_file.read_text(encoding="utf-8").count("Spin polarized") == 1
 
 
+def test_cell_free_homogeneous_catalyst_xyz_end_to_end(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    pytest.importorskip("matplotlib")
+    source = ROOT / "examples" / "Fe_CO5_homogeneous_catalyst.xyz"
+    structure = read_structure(source)
+    assert structure.pbc == (False, False, False)
+    assert np.allclose(structure.cell, 0.0)
+
+    assert (
+        main(["analyze", str(source), "--magnetic-species", "Fe"])
+        == 0
+    )
+    assert "Number of atoms: 11" in capsys.readouterr().out
+
+    spin_file = tmp_path / "fe_co5_spin.fdf"
+    assert (
+        main(
+            [
+                "generate",
+                str(source),
+                "--magnetic-species",
+                "Fe",
+                "--method",
+                "manual-spins",
+                "--spin-values",
+                "1=+2.0",
+                "--output",
+                str(spin_file),
+            ]
+        )
+        == 0
+    )
+    assert parse_dm_init_spin(spin_file) == [(1, 2.0)]
+    assert (
+        main(
+            [
+                "validate",
+                str(spin_file),
+                "--structure",
+                str(source),
+                "--magnetic-species",
+                "Fe",
+            ]
+        )
+        == 0
+    )
+    assert "Valid: True" in capsys.readouterr().out
+
+    image = tmp_path / "fe_co5_spin.png"
+    assert (
+        main(
+            [
+                "plot",
+                str(source),
+                "--spin-file",
+                str(spin_file),
+                "--output",
+                str(image),
+                "--show-bonds",
+            ]
+        )
+        == 0
+    )
+    assert image.is_file() and image.stat().st_size > 0
+
+
 def test_plot_value_color_mode_and_sign_color_warning(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -596,6 +663,214 @@ def test_graph_coloring_noncollinear_cli_maps_three_colors_to_120_degrees(
         [0.0, 120.0, 240.0]
     )
     assert "Spin non-collinear" in output.read_text(encoding="utf-8")
+
+
+def test_manual_spin_cli_group_defaults_and_mutual_exclusion() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "generate",
+            "molecule.xyz",
+            "--magnetic-species",
+            "Fe",
+            "--method",
+            "manual-spins",
+        ]
+    )
+    assert args.spin_values is None
+    assert args.spin_values_file is None
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "generate",
+                "molecule.xyz",
+                "--magnetic-species",
+                "Fe",
+                "--method",
+                "manual-spins",
+                "--spin-values",
+                "1=+4.0",
+                "--spin-values-file",
+                "spins.csv",
+            ]
+        )
+
+
+def test_manual_spins_is_not_an_enumeration_method(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main(
+        [
+            "enumerate",
+            str(ROOT / "tests" / "fixtures" / "FeN6_molecule.xyz"),
+            "--magnetic-species",
+            "Fe",
+            "--methods",
+            "manual-spins",
+            "--n-configs",
+            "1",
+            "--output-dir",
+            str(tmp_path / "configs"),
+        ]
+    )
+    assert code == 2
+    assert "unsupported enumeration method: manual-spins" in capsys.readouterr().err
+
+
+def test_manual_spins_cli_signed_roundtrip_errors_fill_and_csv(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    structure = tmp_path / "fe_pair.xyz"
+    structure.write_text(
+        "3\nFe pair with ligand\nFe 0 0 0\nO 1.8 0 0\nFe 3.6 0 0\n",
+        encoding="utf-8",
+    )
+    direct = tmp_path / "direct.fdf"
+    assert (
+        main(
+            [
+                "generate",
+                str(structure),
+                "--magnetic-species",
+                "Fe",
+                "--method",
+                "manual-spins",
+                "--spin-values",
+                "1=+4.0",
+                "3=-2.0",
+                "--output",
+                str(direct),
+            ]
+        )
+        == 0
+    )
+    assert parse_dm_init_spin(direct) == [(1, 4.0), (3, -2.0)]
+    assert "Method: manual-spins" in direct.read_text(encoding="utf-8")
+
+    assert (
+        main(
+            [
+                "generate",
+                str(structure),
+                "--magnetic-species",
+                "Fe",
+                "--method",
+                "manual-spins",
+                "--spin-values",
+                "1=4.0",
+            ]
+        )
+        == 2
+    )
+    assert "manual spins omit magnetic atom 3 (Fe)" in capsys.readouterr().err
+
+    filled = tmp_path / "filled.fdf"
+    assert (
+        main(
+            [
+                "generate",
+                str(structure),
+                "--magnetic-species",
+                "Fe",
+                "--method",
+                "manual-spins",
+                "--spin-values",
+                "1=4.0",
+                "--fill-unspecified-zero",
+                "--output",
+                str(filled),
+            ]
+        )
+        == 0
+    )
+    assert parse_dm_init_spin(filled) == [(1, 4.0), (3, 0.0)]
+
+    for specification, message in (
+        ("4=1.0", "manual spin atom index out of range: 4"),
+        ("2=1.0", "manual spin atom 2 is not selected by --magnetic-species"),
+    ):
+        assert (
+            main(
+                [
+                    "generate",
+                    str(structure),
+                    "--magnetic-species",
+                    "Fe",
+                    "--method",
+                    "manual-spins",
+                    "--spin-values",
+                    "1=4.0",
+                    "3=-2.0",
+                    specification,
+                ]
+            )
+            == 2
+        )
+        error = capsys.readouterr().err
+        assert message in error
+        if specification.startswith("2="):
+            assert "actual element: O" in error
+
+    csv_path = tmp_path / "spins.csv"
+    csv_path.write_text(
+        "atom_index,spin\n1,+3.5\n3,-1.25\n", encoding="utf-8"
+    )
+    csv_output = tmp_path / "csv.fdf"
+    assert (
+        main(
+            [
+                "generate",
+                str(structure),
+                "--magnetic-species",
+                "Fe",
+                "--method",
+                "manual-spins",
+                "--spin-values-file",
+                str(csv_path),
+                "--output",
+                str(csv_output),
+            ]
+        )
+        == 0
+    )
+    assert parse_dm_init_spin(csv_output) == [(1, 3.5), (3, -1.25)]
+
+
+def test_site_moment_file_still_ignores_negative_sign(tmp_path: Path) -> None:
+    structure = tmp_path / "fe_pair.xyz"
+    structure.write_text(
+        "3\nFe pair with ligand\nFe 0 0 0\nO 1.8 0 0\nFe 3.6 0 0\n",
+        encoding="utf-8",
+    )
+    moments = tmp_path / "moments.csv"
+    moments.write_text(
+        "atom_index,moment\n1,-4.0\n3,-2.0\n", encoding="utf-8"
+    )
+    output = tmp_path / "legacy.fdf"
+    assert (
+        main(
+            [
+                "generate",
+                str(structure),
+                "--magnetic-species",
+                "Fe",
+                "--method",
+                "manual-groups",
+                "--up-atoms",
+                "1",
+                "--down-atoms",
+                "3",
+                "--moment",
+                "4.0",
+                "--site-moment-file",
+                str(moments),
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    assert parse_dm_init_spin(output) == [(1, 4.0), (3, -2.0)]
 
 
 def test_explicit_collinear_spin_mode_matches_the_default_byte_for_byte(

@@ -27,6 +27,7 @@ from .ordering import (
     graph_coloring_ordering,
     layer_ordering,
     manual_groups_ordering,
+    manual_spins_ordering,
     neighbor_bipartite_ordering,
     propagation_vector_ordering,
     random_ordering,
@@ -97,6 +98,8 @@ def generate_assignment(
     max_colors: int = 4,
     color_spins: str | Sequence[int] | None = None,
     balance_colors: bool = False,
+    spin_values: dict[int, float] | None = None,
+    fill_unspecified_zero: bool = False,
     spin_mode: str = "collinear",
     seed: int = 0,
 ) -> tuple[list[int], SpinAssignment, dict[int, float]]:
@@ -119,14 +122,41 @@ def generate_assignment(
         adsorbate_indices=adsorbate_indices,
     )
     default_moments: dict[str, float] | None = None
-    if moment is None:
+    if method == "manual-spins":
+        if spin_values is None:
+            raise ValueError(
+                "manual-spins requires --spin-values or --spin-values-file"
+            )
+        if moment is not None:
+            raise ValueError(
+                "--moment/--moment-config cannot be combined with --method "
+                "manual-spins; the supplied spins are already signed values"
+            )
+        if site_moment_file is not None:
+            raise ValueError(
+                "--site-moment-file cannot be combined with --method manual-spins; "
+                "use --spin-values-file for signed values"
+            )
+    else:
+        if spin_values is not None:
+            raise ValueError("--spin-values/--spin-values-file require --method manual-spins")
+        if fill_unspecified_zero:
+            raise ValueError("--fill-unspecified-zero requires --method manual-spins")
+    if moment is None and method != "manual-spins":
         default_moments = built_in_element_moments(structure, indices)
         moment = [
             f"{element}={value:.1f}" for element, value in default_moments.items()
         ]
     resolved_magnitudes: dict[int, float] | None = None
     resolved_moment_sources: dict[int, str] | None = None
-    if method == "alternating-index":
+    if method == "manual-spins":
+        assignment = manual_spins_ordering(
+            structure,
+            indices,
+            spin_values or {},
+            fill_unspecified_zero=fill_unspecified_zero,
+        )
+    elif method == "alternating-index":
         assignment = alternating_index(indices)
     elif method == "random":
         assignment = random_ordering(indices, seed=seed)
@@ -252,6 +282,13 @@ def generate_assignment(
         assignment = manual_groups_ordering(indices, up, down)
     else:
         raise ValueError(f"unsupported AFM method: {method}")
+    if method == "manual-spins":
+        direct_spins = assignment.metadata.get("spin_values")
+        if not isinstance(direct_spins, dict):
+            raise RuntimeError("manual-spins assignment is missing direct spin values")
+        return indices, assignment, {
+            int(index): float(value) for index, value in direct_spins.items()
+        }
     coordinations = (
         assignment.metadata.get("coordination_numbers")
         if method == "by-coordination"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
+from math import isfinite
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -46,6 +47,7 @@ _METHODS = [
     "propagation-vector",
     "by-species",
     "by-coordination",
+    "manual-spins",
 ]
 _BATCH_METHODS = list(ENUMERATION_METHODS)
 _CANDIDATE_COLUMNS = (
@@ -75,6 +77,7 @@ _RESULTS_NOTEBOOK_MIN_HEIGHT = 250
 _PANE_SASH_MARGIN = 8
 _AUTO_SHOW_INDICES_MAX_ATOMS = 60
 _AUTO_SHOW_BONDS_MAX_ATOMS = 60
+_MANUAL_SPINS_MAX_ATOMS = 60
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +110,9 @@ class GenerationParams:
     max_colors: int = 4
     color_spins: str | None = None
     balance_colors: bool = False
+    spin_values: Mapping[int, float] | None = None
+    spin_values_file: str | Path | None = None
+    fill_unspecified_zero: bool = False
     seed: int = 0
     color_mode: str = "sign"
     spin_mode: str = "collinear"
@@ -149,6 +155,15 @@ class MagnetizationRow:
     count: int
     role: str = "-"
     atom_indices: tuple[int, ...] = ()
+
+
+@dataclass(slots=True)
+class ManualSpinRow:
+    """One atom row in the small-system direct-spin editor."""
+
+    atom_index: int
+    element: str
+    spin: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +210,124 @@ def _three_numbers(text: str, label: str) -> tuple[float, float, float]:
     if len(values) != 3:
         raise ValueError(f"{label} must contain exactly three numbers")
     return values[0], values[1], values[2]
+
+
+def parse_spin_values(values: Sequence[str] | str | None) -> dict[int, float]:
+    """Parse signed ``index=value`` specifications with one-based indices."""
+
+    if values is None:
+        raise ValueError("--spin-values requires at least one index=value")
+    source = [values] if isinstance(values, str) else list(values)
+    items: list[str] = []
+    for item in source:
+        items.extend(part for part in str(item).replace(",", " ").split() if part)
+    if not items:
+        raise ValueError("--spin-values requires at least one index=value")
+
+    result: dict[int, float] = {}
+    for item in items:
+        if item.count("=") != 1:
+            raise ValueError(
+                f"invalid spin specification {item!r}; expected index=value"
+            )
+        index_text, value_text = item.split("=", 1)
+        try:
+            atom_index = int(index_text)
+        except ValueError as exc:
+            raise ValueError(
+                f"manual spin atom index must be a one-based integer: {index_text}"
+            ) from exc
+        if atom_index <= 0:
+            raise ValueError("manual spin atom indices are one-based positive integers")
+        if atom_index in result:
+            raise ValueError(f"duplicate manual spin atom index: {atom_index}")
+        try:
+            spin = float(value_text)
+        except ValueError as exc:
+            raise ValueError(
+                f"manual spin for atom {atom_index} must be a number: {value_text}"
+            ) from exc
+        if not isfinite(spin):
+            raise ValueError(
+                f"manual spin for atom {atom_index} must be a finite number"
+            )
+        result[atom_index] = spin
+    return result
+
+
+def load_spin_values_file(path: str | Path) -> dict[int, float]:
+    """Read signed direct moments from an ``atom_index,spin`` CSV file."""
+
+    result: dict[int, float] = {}
+    with Path(path).open(newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        required = {"atom_index", "spin"}
+        if not reader.fieldnames or not required.issubset(reader.fieldnames):
+            raise ValueError("spin values CSV requires atom_index and spin columns")
+        for row in reader:
+            parsed = parse_spin_values([f"{row['atom_index']}={row['spin']}"])
+            atom_index, spin = next(iter(parsed.items()))
+            if atom_index in result:
+                raise ValueError(f"duplicate manual spin atom index: {atom_index}")
+            result[atom_index] = spin
+    return result
+
+
+def spin_values_from_inputs(
+    values: Mapping[int, float] | Sequence[str] | str | None,
+    file_path: str | Path | None,
+) -> dict[int, float] | None:
+    """Resolve the two mutually exclusive direct-spin input forms."""
+
+    if values is not None and file_path is not None:
+        raise ValueError("--spin-values and --spin-values-file are mutually exclusive")
+    if values is not None:
+        if isinstance(values, Mapping):
+            if not values:
+                return {}
+            return parse_spin_values(
+                [f"{atom_index}={spin}" for atom_index, spin in values.items()]
+            )
+        return parse_spin_values(values)
+    if file_path is not None:
+        return load_spin_values_file(file_path)
+    return None
+
+
+def manual_spin_rows_from_structure(
+    structure: Structure,
+    magnetic_species: Sequence[str],
+    element_spin_defaults: Mapping[str, str] | None = None,
+    *,
+    existing_rows: Sequence[ManualSpinRow] = (),
+) -> list[ManualSpinRow]:
+    """Build atom-order rows while preserving edits for selected species."""
+
+    selected = {item.strip().lower() for item in magnetic_species if item.strip()}
+    defaults = {
+        str(element).lower(): str(value)
+        for element, value in (element_spin_defaults or {}).items()
+    }
+    previous = {
+        (row.atom_index, row.element.lower()): row.spin for row in existing_rows
+    }
+    rows: list[ManualSpinRow] = []
+    for atom_index, element in enumerate(structure.symbols, start=1):
+        normalized = element.lower()
+        spin = ""
+        if normalized in selected:
+            spin = previous.get(
+                (atom_index, normalized), defaults.get(normalized, "")
+            )
+        rows.append(ManualSpinRow(atom_index, element, spin))
+    return rows
+
+
+def spin_values_from_rows(rows: Sequence[ManualSpinRow]) -> dict[int, float]:
+    """Parse every nonblank direct-spin table cell."""
+
+    values = [f"{row.atom_index}={row.spin}" for row in rows if row.spin.strip()]
+    return parse_spin_values(values) if values else {}
 
 
 def _element_counts(structure: Structure) -> dict[str, int]:
@@ -748,6 +881,10 @@ def run_generation(params: GenerationParams) -> GenerationResult:
     if params.color_mode not in {"sign", "value"}:
         raise ValueError("color mode must be 'sign' or 'value'")
     structure = read_structure(params.structure_path, slab=params.slab)
+    spin_values = spin_values_from_inputs(
+        params.spin_values,
+        params.spin_values_file,
+    )
     indices, assignment, spins = generate_assignment(
         structure,
         params.magnetic_species,
@@ -774,6 +911,8 @@ def run_generation(params: GenerationParams) -> GenerationResult:
         max_colors=params.max_colors,
         color_spins=params.color_spins,
         balance_colors=params.balance_colors,
+        spin_values=spin_values,
+        fill_unspecified_zero=params.fill_unspecified_zero,
         spin_mode=params.spin_mode,
         seed=params.seed,
     )

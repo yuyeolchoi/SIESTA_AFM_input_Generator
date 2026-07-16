@@ -11,7 +11,7 @@ from typing import Any, Sequence
 
 from . import __version__
 from .fdf_writer import patch_fdf_file, patch_fdf_text, render_dm_init_spin
-from .gui.controllers import angles_from_result
+from .gui.controllers import angles_from_result, spin_values_from_inputs
 from .input_template import render_complete_input
 from .io import parse_dm_init_spin, read_structure
 from .magnetic_sites import (
@@ -31,7 +31,7 @@ from .visualize import plot_spin_pattern
 from .workflows import ENUMERATION_METHODS, enumerate_candidates, generate_assignment
 
 
-METHODS = list(ENUMERATION_METHODS[:-1])
+METHODS = [*ENUMERATION_METHODS[:-1], "manual-spins"]
 
 
 def _configure_windows_stdio() -> None:
@@ -114,6 +114,30 @@ def _add_spin_mode_control(parser: argparse.ArgumentParser) -> None:
             "generate signed collinear moments (default) or map graph colors "
             "to in-plane non-collinear angles"
         ),
+    )
+
+
+def _add_manual_spin_controls(parser: argparse.ArgumentParser) -> None:
+    direct_group = parser.add_mutually_exclusive_group()
+    # Keep both defaults explicitly None.  On Python <= 3.10 argparse can fail
+    # to recognize a mutually-exclusive conflict when an explicit value equals
+    # a non-None argument default (the same issue documented for --axis).
+    direct_group.add_argument(
+        "--spin-values",
+        nargs="+",
+        default=None,
+        metavar="INDEX=SPIN",
+        help="signed direct moments at one-based atom indices",
+    )
+    direct_group.add_argument(
+        "--spin-values-file",
+        default=None,
+        help="CSV with atom_index,spin columns; signs are preserved",
+    )
+    parser.add_argument(
+        "--fill-unspecified-zero",
+        action="store_true",
+        help="set omitted magnetic atoms to zero instead of reporting an error",
     )
 
 
@@ -221,6 +245,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_site_controls(generate)
     generate.add_argument("--method", choices=METHODS, required=True)
     _add_spin_mode_control(generate)
+    _add_manual_spin_controls(generate)
     _add_ordering_controls(generate)
     generate.add_argument(
         "--seed",
@@ -244,6 +269,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_site_controls(make_input)
     make_input.add_argument("--method", choices=METHODS, required=True)
     _add_spin_mode_control(make_input)
+    _add_manual_spin_controls(make_input)
     _add_ordering_controls(make_input)
     make_input.add_argument(
         "--seed",
@@ -450,6 +476,10 @@ def _moment_values(args: argparse.Namespace) -> list[str] | None:
     return None
 
 
+def _manual_spin_values(args: argparse.Namespace) -> dict[int, float] | None:
+    return spin_values_from_inputs(args.spin_values, args.spin_values_file)
+
+
 def _cmd_generate(args: argparse.Namespace) -> int:
     input_path = _input_path(args)
     structure = _read_from_args(args)
@@ -469,6 +499,8 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         args.magnetic_species,
         args.method,
         _moment_values(args),
+        spin_values=_manual_spin_values(args),
+        fill_unspecified_zero=args.fill_unspecified_zero,
         spin_mode=args.spin_mode,
         seed=args.seed,
         **_workflow_kwargs(args),
@@ -544,6 +576,8 @@ def _cmd_make_input(args: argparse.Namespace) -> int:
         args.magnetic_species,
         args.method,
         _moment_values(args),
+        spin_values=_manual_spin_values(args),
+        fill_unspecified_zero=args.fill_unspecified_zero,
         spin_mode=args.spin_mode,
         seed=args.seed,
         **_workflow_kwargs(args),
@@ -682,7 +716,7 @@ def _cmd_enumerate(args: argparse.Namespace) -> int:
     methods = [item.strip() for item in args.methods.split(",") if item.strip()]
     if not methods:
         raise ValueError("--methods must contain at least one method")
-    allowed = set(METHODS) | {"frustrated"}
+    allowed = set(ENUMERATION_METHODS)
     unknown = [method for method in methods if method not in allowed]
     if unknown:
         raise ValueError(f"unsupported enumeration method: {unknown[0]}")

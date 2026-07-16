@@ -19,6 +19,7 @@ from siesta_afm.ordering import (
     layer_ordering,
     neighbor_bipartite_ordering,
     manual_groups_ordering,
+    manual_spins_ordering,
     propagation_vector_ordering,
     random_ordering,
 )
@@ -116,6 +117,79 @@ def test_fractional_propagation_vector_explains_singular_cell() -> None:
         propagation_vector_ordering(atoms, [0], [0.5, 0, 0])
 
 
+def test_cell_free_molecular_xyz_generation_method_matrix() -> None:
+    molecule = read_structure(ROOT / "tests" / "fixtures" / "FeN6_molecule.xyz")
+    assert molecule.pbc == (False, False, False)
+    assert np.allclose(molecule.cell, 0.0)
+
+    successful_cases = [
+        ("alternating-index", {}),
+        ("random", {}),
+        ("layer", {}),
+        ("checkerboard", {}),
+        ("neighbor-bipartite", {}),
+        ("graph-coloring", {}),
+        (
+            "propagation-vector",
+            {"q_vector": (0.5, 0.0, 0.0), "fractional_coordinates": False},
+        ),
+        ("manual-groups", {"up_atoms": "1"}),
+        (
+            "by-coordination",
+            {
+                "anion_species": ("N",),
+                "anion_cutoff": 2.2,
+                "up_coordination": (6,),
+                "down_coordination": (4,),
+            },
+        ),
+        ("frustrated", {}),
+        ("manual-spins", {"spin_values": {1: -3.25}}),
+    ]
+    for method, options in successful_cases:
+        _indices, assignment, spins = generate_assignment(
+            molecule,
+            ["Fe"],
+            method,
+            None if method == "manual-spins" else "4.0",
+            **options,
+        )
+        assert assignment.method == method
+        assert set(spins) == {0}
+
+    _indices, assignment, spins = generate_assignment(
+        molecule,
+        ["Fe", "N"],
+        "by-species",
+        ("Fe=4.0", "N=1.0"),
+        up_species=("Fe",),
+        down_species=("N",),
+    )
+    assert assignment.method == "by-species"
+    assert spins[0] == 4.0
+    assert all(spins[index] == -1.0 for index in range(1, 7))
+
+    with pytest.raises(
+        ValueError,
+        match="fractional propagation-vector coordinates require a nonsingular cell",
+    ):
+        generate_assignment(
+            molecule,
+            ["Fe"],
+            "propagation-vector",
+            "4.0",
+            q_vector=(0.5, 0.0, 0.0),
+        )
+    with pytest.raises(ValueError, match="fractional coordinates require a nonsingular cell"):
+        generate_assignment(
+            molecule,
+            ["Fe"],
+            "layer",
+            "4.0",
+            fractional_layers=True,
+        )
+
+
 def test_manual_groups_reject_overlap_and_missing_atoms() -> None:
     with pytest.raises(ValueError, match="overlap"):
         manual_groups_ordering([0, 1], [1, 2], [2])
@@ -126,6 +200,33 @@ def test_manual_groups_reject_overlap_and_missing_atoms() -> None:
 def test_manual_groups_assign_all_magnetic_atoms() -> None:
     result = manual_groups_ordering([0, 2, 4], [1, 5], [3])
     assert result.signs == {0: 1, 4: 1, 2: -1}
+
+
+def test_manual_spins_preserve_direct_values_and_validate_selected_atoms() -> None:
+    atoms = Structure(
+        ["Fe", "N", "Fe"],
+        [[0, 0, 0], [1.8, 0, 0], [3.6, 0, 0]],
+    )
+    result = manual_spins_ordering(atoms, [0, 2], {1: 4.0, 3: -2.0})
+    assert result.method == "manual-spins"
+    assert result.signs == {0: 1, 2: -1}
+    assert result.metadata["spin_values"] == {0: 4.0, 2: -2.0}
+
+    with pytest.raises(ValueError, match=r"omit magnetic atom 3 \(Fe\)"):
+        manual_spins_ordering(atoms, [0, 2], {1: 4.0})
+    filled = manual_spins_ordering(
+        atoms, [0, 2], {1: 4.0}, fill_unspecified_zero=True
+    )
+    assert filled.signs == {0: 1, 2: 0}
+    assert filled.metadata["spin_values"] == {0: 4.0, 2: 0.0}
+
+    with pytest.raises(ValueError, match="atom index out of range: 4"):
+        manual_spins_ordering(atoms, [0, 2], {1: 4.0, 3: -2.0, 4: 1.0})
+    with pytest.raises(
+        ValueError,
+        match=r"manual spin atom 2.*actual element: N",
+    ):
+        manual_spins_ordering(atoms, [0, 2], {1: 4.0, 2: 1.0, 3: -2.0})
 
 
 def test_propagation_vector_warns_with_one_based_node_indices() -> None:
