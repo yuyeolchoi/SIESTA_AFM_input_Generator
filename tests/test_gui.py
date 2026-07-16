@@ -599,6 +599,7 @@ def test_default_gui_layout_keeps_visible_inputs_wide_enough(
         assert app.complete_input_action.cget("command")
         assert app.method_option_frames["layer"].winfo_ismapped()
         assert not app.method_option_frames["by-coordination"].winfo_ismapped()
+        assert app.split_species_check.instate(["disabled"])
         app.structure_path = (
             ROOT / "tests" / "fixtures" / "inverse_spinel_coordination.cif"
         )
@@ -610,6 +611,9 @@ def test_default_gui_layout_keeps_visible_inputs_wide_enough(
         root.update()
         assert app.method_option_frames["by-coordination"].winfo_ismapped()
         assert not app.method_option_frames["layer"].winfo_ismapped()
+        assert not app.split_species_check.instate(["disabled"])
+        assert not app.split_species_by_coordination_var.get()
+        app.split_species_by_coordination_var.set(True)
         assert [
             (row.element, row.coordination)
             for row in app.magnetization_rows
@@ -619,6 +623,8 @@ def test_default_gui_layout_keeps_visible_inputs_wide_enough(
         app.method_var.set("graph-coloring")
         app.spin_mode_var.set("non-collinear")
         root.update()
+        assert app.split_species_check.instate(["disabled"])
+        assert not app.split_species_by_coordination_var.get()
         assert app.method_option_frames["graph-coloring"].winfo_ismapped()
         assert app.color_spins_entry.instate(["disabled"])
         assert app.balance_colors_check.instate(["disabled"])

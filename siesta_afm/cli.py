@@ -294,7 +294,18 @@ def build_parser() -> argparse.ArgumentParser:
     make_input.add_argument(
         "--hubbard-u",
         nargs="+",
-        help="override default effective U values, e.g. Ni=6.0 Co=3.3",
+        help=(
+            "override default effective U values, e.g. Ni=6.0 Co=3.3 or "
+            "Co@4=3.0 Co@6=5.0"
+        ),
+    )
+    make_input.add_argument(
+        "--split-species-by-coordination",
+        action="store_true",
+        help=(
+            "split multi-CN magnetic elements into separate SIESTA species "
+            "(--method by-coordination only)"
+        ),
     )
     make_input.add_argument(
         "--no-lda-u", dest="lda_u", action="store_false", default=True
@@ -558,6 +569,10 @@ def _cmd_generate(args: argparse.Namespace) -> int:
 
 
 def _cmd_make_input(args: argparse.Namespace) -> int:
+    if args.split_species_by_coordination and args.method != "by-coordination":
+        raise ValueError(
+            "--split-species-by-coordination requires --method by-coordination"
+        )
     input_path = _input_path(args)
     structure = _read_from_args(args)
     if args.guess_oxidation_states:
@@ -598,6 +613,7 @@ def _cmd_make_input(args: argparse.Namespace) -> int:
         system_name=args.system_name,
         write_zero_spins=args.write_zero_spins,
         site_comments=args.site_comments,
+        split_species_by_coordination=args.split_species_by_coordination,
     )
     for warning in (*assignment.warnings, *result.warnings):
         print(f"WARNING:\n{warning}", file=sys.stderr)

@@ -183,6 +183,7 @@ class DesktopApp:
         self.spin_values_file_var = tk.StringVar(value="")
         self.fill_unspecified_zero_var = tk.BooleanVar(value=False)
         self.site_comments_var = tk.BooleanVar(value=True)
+        self.split_species_by_coordination_var = tk.BooleanVar(value=False)
         self.cli_options_var = tk.StringVar(value="--magnetic-species")
         self.axis_var = tk.StringVar(value="z")
         self.layer_direction_var = tk.StringVar(value="")
@@ -446,11 +447,19 @@ class DesktopApp:
         option_row = self._entry_row(
             coordination_frame, option_row, "Down CN", self.down_coordination_var
         )
-        self._entry_row(
+        option_row = self._entry_row(
             coordination_frame,
             option_row,
             "CN tolerance",
             self.coordination_tolerance_var,
+        )
+        self.split_species_check = ttk.Checkbutton(
+            coordination_frame,
+            text="Split species by CN in complete input",
+            variable=self.split_species_by_coordination_var,
+        )
+        self.split_species_check.grid(
+            row=option_row, column=0, columnspan=2, sticky="w", pady=3
         )
         self.method_option_frames["by-coordination"] = coordination_frame
         row += 1
@@ -1340,6 +1349,13 @@ class DesktopApp:
             self.checker_tolerance_entry.grid_remove()
         self._sync_manual_spins_display()
         self._sync_graph_spin_mode_state()
+        self._sync_split_species_state()
+
+    def _sync_split_species_state(self) -> None:
+        state = (
+            "normal" if self.method_var.get() == "by-coordination" else "disabled"
+        )
+        self.split_species_check.configure(state=state)
 
     def _sync_graph_spin_mode_state(self) -> None:
         state = "normal" if self.spin_mode_var.get() == "collinear" else "disabled"
@@ -1626,6 +1642,7 @@ class DesktopApp:
             self._table_after_id = None
         if self.method_var.get() != "by-coordination":
             self._coordination_use_note = None
+            self.split_species_by_coordination_var.set(False)
         self._reset_spin_coordination_numbers_for_result(None)
         self._show_method_options()
         if self.current_structure is not None:
@@ -2454,12 +2471,20 @@ class DesktopApp:
         )
         if not destination:
             return
-        document = complete_input_document(self.current_result)
+        split_species = self.split_species_by_coordination_var.get()
+        document = complete_input_document(
+            self.current_result,
+            split_species_by_coordination=split_species,
+        )
         self.deps.messagebox.showwarning(
             "Complete input is a starting point", "\n\n".join(document.warnings)
         )
         self._run_export(
-            lambda: export_complete_input(self.current_result, destination),
+            lambda: export_complete_input(
+                self.current_result,
+                destination,
+                split_species_by_coordination=split_species,
+            ),
             "Exported complete SIESTA starting input",
         )
 

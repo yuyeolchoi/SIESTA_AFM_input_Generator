@@ -55,6 +55,95 @@ def test_make_input_cli_writes_roundtrippable_template_and_warning(
     assert "starting template only" in stderr
 
 
+def test_make_input_cli_splits_coordination_species_and_hubbard_u(
+    tmp_path: Path,
+) -> None:
+    source = ROOT / "tests" / "fixtures" / "inverse_spinel_coordination.cif"
+    output = tmp_path / "split_complete.fdf"
+    assert (
+        main(
+            [
+                "make-input",
+                str(source),
+                "--slab",
+                "--magnetic-species",
+                "Ni",
+                "Co",
+                "--method",
+                "by-coordination",
+                "--anion-species",
+                "O",
+                "--split-species-by-coordination",
+                "--hubbard-u",
+                "Ni@6=6.0",
+                "Co@4=3.0",
+                "Co@6=5.0",
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    original = read_structure(source, slab=True)
+    generated = read_structure(output)
+    assert generated.symbols == original.symbols
+    assert np.allclose(generated.positions, original.positions)
+    assert generated.species_ids == [1, 1, 2, 2, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4]
+    text = output.read_text(encoding="utf-8")
+    assert "Co_2  # Co CN=6 (Oh)" in text
+    assert "Co_3  # Co CN=4 (Td)" in text
+
+
+def test_make_input_coordination_split_rejects_invalid_combinations(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    source = ROOT / "tests" / "fixtures" / "inverse_spinel_coordination.cif"
+    common = [
+        "make-input",
+        str(source),
+        "--slab",
+        "--magnetic-species",
+        "Co",
+    ]
+    assert (
+        main(
+            [
+                *common,
+                "--method",
+                "by-coordination",
+                "--anion-species",
+                "O",
+                "--hubbard-u",
+                "Co@4=3.0",
+                "--output",
+                str(tmp_path / "missing_flag.fdf"),
+            ]
+        )
+        == 2
+    )
+    assert "@CN Hubbard U requires --split-species-by-coordination" in (
+        capsys.readouterr().err
+    )
+
+    assert (
+        main(
+            [
+                *common,
+                "--method",
+                "alternating-index",
+                "--split-species-by-coordination",
+                "--output",
+                str(tmp_path / "wrong_method.fdf"),
+            ]
+        )
+        == 2
+    )
+    assert (
+        "--split-species-by-coordination requires --method by-coordination"
+        in capsys.readouterr().err
+    )
+
+
 def test_generate_patch_in_place_rejects_different_output(
     tmp_path: Path, capsys
 ) -> None:

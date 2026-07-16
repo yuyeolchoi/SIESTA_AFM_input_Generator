@@ -78,13 +78,15 @@ siesta-afm make-input inverse_spinel.cif \
   --method by-coordination \
   --anion-species O \
   --moment Ni@6=2.0 Co@4=2.0 Co@6=0.0 \
-  --hubbard-u Ni=6.0 Co=3.3 \
+  --split-species-by-coordination \
+  --hubbard-u Ni@6=6.0 Co@4=3.0 Co@6=5.0 \
   --output input.fdf
 ```
 
 The coordinate rows and `DM.InitSpin` indices retain exactly the input atom
-order. Existing FDF/XV species IDs are retained; other formats receive species
-IDs in first-appearance order. The automatic k-grid is
+order. Without coordination splitting, existing FDF/XV species IDs are retained;
+other formats receive species IDs in first-appearance order. The automatic
+k-grid is
 `ceil(30 Ang / |a_i|)` on each periodic axis and 1 on each nonperiodic axis.
 Use `--kgrid N1 N2 N3` or `--kgrid-cutoff K` to change it, and
 `--basis-size SZ|SZP|DZ|DZP|TZP` to select the starting basis.
@@ -97,6 +99,18 @@ the Dudarev combination `U_eff = U - J` for this collinear setup, so the templat
 writes `U=U_eff` and `J=0`. DFT+U is applied per SIESTA species, not independently
 per `(element, CN)` row; the command warns when one element occupies multiple
 coordination sublattices.
+
+For `--method by-coordination`, the opt-in
+`--split-species-by-coordination` flag assigns separate, contiguous species IDs
+to a magnetic element's distinct CN sites without changing coordinate-row order.
+It reuses SIESTA labels such as `Co_2` and `Co_3`, enables CN-specific overrides
+such as `--hubbard-u Co@4=3.0 Co@6=5.0`, and adds CN/geometry comments to
+`ChemicalSpeciesLabel`. A plain `Co=3.0` remains valid and applies the same U to
+all split Co species. Each generated label needs its own pseudopotential filename,
+so copies such as `Co_2.psf` and `Co_3.psf` (or matching PSML files) must be placed
+in the run directory. Without the flag, output remains unchanged and `@CN`
+Hubbard-U overrides are rejected. The GUI exposes the same opt-in checkbox only
+while `by-coordination` is selected.
 
 The generated file is only a starting template. It is not publication-ready
 until the pseudopotentials, basis, MeshCutoff, k-grid, SCF settings, Hubbard U,

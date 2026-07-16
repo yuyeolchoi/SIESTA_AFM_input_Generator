@@ -1205,6 +1205,8 @@ def export_structure_with_moments(
 
 def complete_input_document(
     result: GenerationResult | SpinFileResult,
+    *,
+    split_species_by_coordination: bool = False,
     **options: object,
 ) -> InputTemplateResult:
     """Build the same complete starting input used by the CLI."""
@@ -1229,6 +1231,7 @@ def complete_input_document(
         magnetic_species=magnetic_species,
         metadata=metadata,
         angles=angles_from_result(result),
+        split_species_by_coordination=split_species_by_coordination,
         **options,
     )
 
@@ -1236,11 +1239,17 @@ def complete_input_document(
 def export_complete_input(
     result: GenerationResult | SpinFileResult,
     destination: str | Path,
+    *,
+    split_species_by_coordination: bool = False,
     **options: object,
 ) -> Path:
     """Write a complete SIESTA starting input through the shared renderer."""
 
-    document = complete_input_document(result, **options)
+    document = complete_input_document(
+        result,
+        split_species_by_coordination=split_species_by_coordination,
+        **options,
+    )
     path = Path(destination)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(document.text, encoding="utf-8")
