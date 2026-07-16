@@ -1,0 +1,41 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pytest:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        python-version: ["3.10", "3.12"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # Real Tk windows only come up where a display is available (Windows
+      # runners). On Linux there is no Xvfb here on purpose: the Tk-backed
+      # tests already self-skip via pytest.skip() when tkinter.Tk() raises
+      # TclError for "no display", so Linux still exercises every non-GUI
+      # test (CLI, core science modules, GUI controller layer) without the
+      # added complexity of a virtual display. python3-tk is still needed so
+      # `import tkinter` itself succeeds and the skip path is reached.
+      - name: Install system Tk (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk
+
+      - name: Install siesta-afm
+        run: python -m pip install -e ".[test,plot,gui,yaml,oxidation]"
+
+      - name: Run pytest
+        run: python -m pytest -q
