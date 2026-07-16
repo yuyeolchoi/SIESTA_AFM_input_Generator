@@ -369,6 +369,17 @@ def build_parser() -> argparse.ArgumentParser:
     enumerate_parser.add_argument("--n-configs", type=int, default=8)
     enumerate_parser.add_argument("--output-dir", required=True)
     enumerate_parser.add_argument("--keep-global-spin-inversion", action="store_true")
+    enumerate_parser.add_argument(
+        "--symmetry-dedup",
+        action="store_true",
+        help="identify candidates related by crystallographic symmetry",
+    )
+    enumerate_parser.add_argument(
+        "--symprec",
+        type=float,
+        default=1e-3,
+        help="spglib symmetry tolerance in angstrom (default: 1e-3)",
+    )
     _add_site_comment_control(enumerate_parser)
     enumerate_parser.set_defaults(func=_cmd_enumerate)
 
@@ -684,6 +695,8 @@ def _cmd_enumerate(args: argparse.Namespace) -> int:
         args.n_configs,
         args.output_dir,
         keep_global_spin_inversion=args.keep_global_spin_inversion,
+        symmetry_dedup=args.symmetry_dedup,
+        symprec=args.symprec,
         site_comments=args.site_comments,
         **_workflow_kwargs(args),
     )

@@ -326,6 +326,8 @@ def test_workflow_kwargs_gate_method_specific_inputs_without_tk() -> None:
         "balance_colors": True,
         "group_file": " ignored.yaml ",
         "seed_offset": "7",
+        "symmetry_dedup": True,
+        "symprec": "0.002",
     }
 
     layer = gui.workflow_kwargs_from_inputs(["layer"], rows, **inputs)
@@ -352,6 +354,8 @@ def test_workflow_kwargs_gate_method_specific_inputs_without_tk() -> None:
         "balance_colors": False,
         "group_file": None,
         "seed_offset": 7,
+        "symmetry_dedup": True,
+        "symprec": 0.002,
     }
 
     inputs.update(
@@ -1059,6 +1063,63 @@ def test_batch_controller_rows_and_result_sorting(tmp_path: Path) -> None:
     assert rows[0].tags == ("near_ground",)
     assert rows[1].tags == ("near_ground",)
     assert rows[2].tags == ("unconverged",)
+
+
+def test_batch_controller_forwards_symmetry_options_without_tk(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured: dict[str, object] = {}
+    sentinel = object()
+
+    def fake_enumerate(*args: object, **kwargs: object) -> object:
+        captured.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(
+        "siesta_afm.gui.controllers.enumerate_candidates",
+        fake_enumerate,
+    )
+    result = gui.run_candidate_generation(
+        Structure(["Cu"], [[0.0, 0.0, 0.0]]),
+        ("Cu",),
+        ("random",),
+        "1",
+        1,
+        tmp_path,
+        symmetry_dedup=True,
+        symprec=0.002,
+    )
+
+    assert result is sentinel
+    assert captured["symmetry_dedup"] is True
+    assert captured["symprec"] == 0.002
+
+
+def test_batch_controller_preserves_missing_spglib_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cell = np.eye(3)
+    structure = Structure(
+        ["Cu"],
+        [[0.0, 0.0, 0.0]],
+        cell=cell,
+        pbc=(True, True, True),
+    )
+    monkeypatch.setitem(sys.modules, "spglib", None)
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"--symmetry-dedup requires the optional spglib dependency",
+    ):
+        gui.run_candidate_generation(
+            structure,
+            ("Cu",),
+            ("random",),
+            "1",
+            1,
+            tmp_path,
+            symmetry_dedup=True,
+        )
 
 
 def test_batch_prepare_and_existing_results_wrappers(tmp_path: Path) -> None:

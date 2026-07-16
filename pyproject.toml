@@ -18,6 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 oxidation = ["pymatgen>=2024.1"]
+symmetry = ["spglib>=2.0"]
 plot = ["matplotlib>=3.7"]
 gui = ["matplotlib>=3.7"]
 yaml = ["PyYAML>=6.0"]

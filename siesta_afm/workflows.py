@@ -34,6 +34,7 @@ from .ordering import (
 )
 from .neighbors import build_neighbor_graph
 from .structure import Structure
+from .symmetry import structure_symmetry_permutations
 
 
 ENUMERATION_METHODS = (
@@ -346,13 +347,61 @@ def generate_assignment(
 
 
 def _canonical_pattern(
-    signs: dict[int, int], keep_global_spin_inversion: bool
+    signs: dict[int, int],
+    keep_global_spin_inversion: bool,
+    symmetry_permutations: Sequence[tuple[int, ...]] | None = None,
 ) -> tuple[int, ...]:
     pattern = tuple(signs[index] for index in sorted(signs))
+    if not symmetry_permutations:
+        if keep_global_spin_inversion:
+            return pattern
+        inverse = tuple(-value for value in pattern)
+        return min(pattern, inverse)
+
+    equivalent_patterns: list[tuple[int, ...]] = []
+    for permutation in symmetry_permutations:
+        if len(permutation) != len(pattern):
+            continue
+        transformed = [0] * len(pattern)
+        for source_index, target_index in enumerate(permutation):
+            transformed[target_index] = pattern[source_index]
+        equivalent_patterns.append(tuple(transformed))
+    if not equivalent_patterns:
+        equivalent_patterns.append(pattern)
     if keep_global_spin_inversion:
-        return pattern
-    inverse = tuple(-value for value in pattern)
-    return min(pattern, inverse)
+        return min(equivalent_patterns)
+    inverted_patterns = [
+        tuple(-value for value in item) for item in equivalent_patterns
+    ]
+    return min(*equivalent_patterns, *inverted_patterns)
+
+
+def _project_symmetry_permutations(
+    permutations: Sequence[tuple[int, ...]], indices: Sequence[int]
+) -> list[tuple[int, ...]]:
+    """Restrict full-structure source-to-target permutations to selected sites."""
+
+    ordered_indices = tuple(sorted(indices))
+    local_index = {
+        atom_index: index for index, atom_index in enumerate(ordered_indices)
+    }
+    identity = tuple(range(len(ordered_indices)))
+    projected = [identity]
+    seen = {identity}
+    for permutation in permutations:
+        try:
+            item = tuple(
+                local_index[permutation[atom_index]] for atom_index in ordered_indices
+            )
+        except (IndexError, KeyError):
+            # Site exclusions can remove a symmetry mate.  Retain only the
+            # subgroup that maps the selected magnetic set onto itself.
+            continue
+        if len(set(item)) != len(ordered_indices) or item in seen:
+            continue
+        seen.add(item)
+        projected.append(item)
+    return projected
 
 
 def apply_coordination_labels(
@@ -390,6 +439,8 @@ def enumerate_candidates(
     output_dir: str | Path,
     *,
     keep_global_spin_inversion: bool = False,
+    symmetry_dedup: bool = False,
+    symprec: float = 1e-3,
     site_comments: bool = True,
     coordination_labels: Sequence[tuple[str, int, str]] = (),
     seed_offset: int = 0,
@@ -410,6 +461,21 @@ def enumerate_candidates(
     unknown = [method for method in normalized_methods if method not in allowed]
     if unknown:
         raise ValueError(f"unsupported enumeration method: {unknown[0]}")
+
+    magnetic_symmetry_permutations: list[tuple[int, ...]] | None = None
+    if symmetry_dedup:
+        symmetry_indices = select_magnetic_sites(
+            structure,
+            magnetic_species,
+            exclude_atoms=workflow_kwargs.get("exclude_atoms"),
+            adsorbate_indices=workflow_kwargs.get("adsorbate_indices"),
+        )
+        full_permutations = structure_symmetry_permutations(
+            structure, symprec=symprec
+        )
+        magnetic_symmetry_permutations = _project_symmetry_permutations(
+            full_permutations, symmetry_indices
+        )
 
     destination = Path(output_dir)
     destination.mkdir(parents=True, exist_ok=True)
@@ -440,7 +506,11 @@ def enumerate_candidates(
         apply_coordination_labels(
             structure, indices, assignment, coordination_labels
         )
-        key = _canonical_pattern(assignment.signs, keep_global_spin_inversion)
+        key = _canonical_pattern(
+            assignment.signs,
+            keep_global_spin_inversion,
+            magnetic_symmetry_permutations,
+        )
         if key in seen:
             continue
         try:

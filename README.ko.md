@@ -15,10 +15,10 @@ python -m venv .venv
 python -m pip install -e ".[test]"
 ```
 
-산화수 추정, 시각화, GUI는 각각 선택 의존성입니다.
+산화수 추정, 대칭 기반 후보 중복 제거, 시각화, GUI는 각각 선택 의존성입니다.
 
 ```bash
-python -m pip install -e ".[oxidation,plot,gui,yaml]"
+python -m pip install -e ".[oxidation,symmetry,plot,gui,yaml]"
 ```
 
 ## 빠른 시작
@@ -285,6 +285,12 @@ siesta-afm collect-results siesta_jobs
 가지므로 보통 별도 계산할 필요가 없습니다. 두 관례가 특별히 모두 필요할 때만
 `--keep-global-spin-inversion`을 사용할 수 있습니다.
 
+완전한 3차원 주기 구조에서는 `enumerate --symmetry-dedup`으로 결정 대칭에 의해
+서로 옮겨지는 패턴도 같은 후보로 볼 수 있습니다. 이 opt-in 모드는 spglib를 제공하는
+`symmetry` extra가 필요하며, `--symprec`로 원자 매칭의 Cartesian 허용오차를
+지정합니다(기본값 `1e-3` Å). `--symmetry-dedup`을 생략하면 기존의 정확한 패턴/전역
+스핀 반전 중복 제거 동작은 바뀌지 않습니다.
+
 산화수와 스핀 상태 자체가 불확실하다면 스핀 파일을 별도로 만드십시오. 예를 들어
 Co(Oh)=0(LS)과 Co(Oh)=비0(HS)으로 `generate` 또는 `make-input`을 각각 호출합니다.
 그 파일들과 `enumerate` 후보를 한 설정 디렉터리에 복사하고, 각 파일의 `config_id`와
@@ -311,7 +317,9 @@ patch할 수 있습니다. Hubbard U는 베이스 계산 설정이므로 U마다
 출력 디렉터리를 선택하면 현재
 magnetization 테이블의 `--magnetic-species`와 `--moment` 값으로 후보를 만들고, 생성된
 행과 건너뛴 method의 경고를 모두 표시합니다. `manual-groups`를 쓸 때는 같은 패널에서
-기존 group 파일도 선택합니다. `Prepare jobs`에서는 먼저 `Build complete
+기존 group 파일도 선택합니다. 완전한 3차원 주기 입력에서는 기본으로 꺼진
+`Symmetry-aware dedup` 체크박스로 CLI와 같은 spglib 기반 후보 중복 제거를 켤 수
+있습니다. `Prepare jobs`에서는 먼저 `Build complete
 SIESTA input (make-input)...`으로 디스크에 저장한 완전한 FDF, `manifest.csv`가 있는 후보
 디렉터리, 작업 출력 디렉터리를 명시적으로 선택합니다. 생성된 `folders.list` 내용도 탭에
 표시됩니다.

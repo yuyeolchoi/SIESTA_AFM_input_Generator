@@ -346,6 +346,8 @@ def workflow_kwargs_from_inputs(
     balance_colors: bool = False,
     group_file: str = "",
     seed_offset: str | int = 0,
+    symmetry_dedup: bool = False,
+    symprec: str | float = 1e-3,
 ) -> dict[str, object]:
     """Collect workflow options from widget-independent input values."""
 
@@ -412,6 +414,8 @@ def workflow_kwargs_from_inputs(
             group_file.strip() if "manual-groups" in selected_methods else None
         ),
         "seed_offset": int(seed_offset),
+        "symmetry_dedup": symmetry_dedup,
+        "symprec": float(symprec),
     }
 
 
@@ -815,6 +819,8 @@ def run_candidate_generation(
     output_dir: str | Path,
     *,
     keep_global_spin_inversion: bool = False,
+    symmetry_dedup: bool = False,
+    symprec: float = 1e-3,
     site_comments: bool = True,
     **workflow_kwargs: object,
 ) -> EnumerationResult:
@@ -830,6 +836,8 @@ def run_candidate_generation(
         n_configs,
         output_dir,
         keep_global_spin_inversion=keep_global_spin_inversion,
+        symmetry_dedup=symmetry_dedup,
+        symprec=symprec,
         site_comments=site_comments,
         **workflow_kwargs,
     )

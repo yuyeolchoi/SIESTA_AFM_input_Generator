@@ -15,10 +15,11 @@ python -m venv .venv
 python -m pip install -e ".[test]"
 ```
 
-Oxidation-state guessing, visualization, and the GUI are separate optional dependencies.
+Oxidation-state guessing, symmetry-aware candidate deduplication,
+visualization, and the GUI are separate optional dependencies.
 
 ```bash
-python -m pip install -e ".[oxidation,plot,gui,yaml]"
+python -m pip install -e ".[oxidation,symmetry,plot,gui,yaml]"
 ```
 
 ## Quick start
@@ -325,6 +326,12 @@ time-reversal symmetry, so it normally should not be run separately;
 `--keep-global-spin-inversion` is available only when both conventions are
 specifically needed.
 
+For a fully periodic structure, `enumerate --symmetry-dedup` also identifies
+patterns related by crystallographic symmetry. This opt-in mode requires the
+`symmetry` extra (spglib); `--symprec` controls its Cartesian matching tolerance
+and defaults to `1e-3` angstrom. Without `--symmetry-dedup`, enumeration and its
+existing exact/global-inversion duplicate handling are unchanged.
+
 If oxidation and spin states are themselves uncertain, build separate spin
 files—for example, call `generate` or `make-input` once with Co(Oh)=0 (LS) and
 once with nonzero Co(Oh) (HS). Copy those files, plus any enumerated candidates,
@@ -354,7 +361,9 @@ above without changing their file formats. In `Candidates`,
 choose one or more methods and an output directory; the current magnetization
 table supplies `--magnetic-species` and `--moment`, and the generated rows plus
 all skipped-method warnings are shown in the tab. When using `manual-groups`,
-select its existing group file in the same panel. `Prepare jobs` requires an
+select its existing group file in the same panel. For a fully periodic input,
+the default-off `Symmetry-aware dedup` checkbox enables the same spglib-backed
+candidate collapsing as the CLI. `Prepare jobs` requires an
 explicit, already saved complete FDF from `Build complete SIESTA input
 (make-input)...`, a candidate directory containing `manifest.csv`, and an
 output directory. It shows the resulting `folders.list` entries.

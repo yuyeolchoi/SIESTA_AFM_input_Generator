@@ -208,6 +208,7 @@ class DesktopApp:
         }
         self.batch_n_configs_var = tk.StringVar(value="8")
         self.batch_keep_inversion_var = tk.BooleanVar(value=False)
+        self.batch_symmetry_dedup_var = tk.BooleanVar(value=False)
         self.candidate_output_var = tk.StringVar(value="")
         self.batch_group_file_var = tk.StringVar(value="")
         self.base_input_var = tk.StringVar(value="")
@@ -895,6 +896,11 @@ class DesktopApp:
             text="Keep global spin inversion",
             variable=self.batch_keep_inversion_var,
         ).grid(row=0, column=2, columnspan=3, sticky="w")
+        ttk.Checkbutton(
+            controls,
+            text="Symmetry-aware dedup",
+            variable=self.batch_symmetry_dedup_var,
+        ).grid(row=0, column=5, columnspan=2, sticky="w")
         ttk.Label(controls, text="Output directory").grid(
             row=1, column=0, sticky="w", pady=(3, 0)
         )
@@ -1738,6 +1744,8 @@ class DesktopApp:
             balance_colors=self.balance_colors_var.get(),
             group_file=self.batch_group_file_var.get(),
             seed_offset=(self.seed_var.get() if seed_offset is None else seed_offset),
+            symmetry_dedup=self.batch_symmetry_dedup_var.get(),
+            symprec=1e-3,
         )
 
     def _generate_candidates(self) -> None:
@@ -1854,6 +1862,8 @@ class DesktopApp:
         )
         workflow_kwargs.pop("neighbor_shell")
         workflow_kwargs.pop("group_file")
+        workflow_kwargs.pop("symmetry_dedup")
+        workflow_kwargs.pop("symprec")
         seed = workflow_kwargs.pop("seed_offset")
         spin_mode = (
             self.spin_mode_var.get()

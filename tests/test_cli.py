@@ -1,4 +1,5 @@
 import csv
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -371,6 +372,101 @@ def _write_triangle_xyz(path: Path) -> None:
         "Cu 1.0 0.0 0.0\n"
         f"Cu 0.5 {root3 / 2:.12f} 0.0\n",
         encoding="utf-8",
+    )
+
+
+def _write_symmetric_triplet_cif(path: Path) -> None:
+    path.write_text(
+        "data_symmetric_triplet\n"
+        "_symmetry_space_group_name_H-M 'P 1'\n"
+        "_cell_length_a 2.0\n"
+        "_cell_length_b 2.0\n"
+        "_cell_length_c 2.0\n"
+        "_cell_angle_alpha 90\n"
+        "_cell_angle_beta 90\n"
+        "_cell_angle_gamma 90\n"
+        "loop_\n"
+        "_atom_site_label\n"
+        "_atom_site_type_symbol\n"
+        "_atom_site_fract_x\n"
+        "_atom_site_fract_y\n"
+        "_atom_site_fract_z\n"
+        "Cu1 Cu 0.0 0.5 0.5\n"
+        "Cu2 Cu 0.5 0.0 0.5\n"
+        "Cu3 Cu 0.5 0.5 0.0\n",
+        encoding="utf-8",
+    )
+
+
+def test_enumerate_symmetry_dedup_cli_smoke(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    pytest.importorskip("spglib")
+    structure = tmp_path / "symmetric_triplet.cif"
+    _write_symmetric_triplet_cif(structure)
+    output = tmp_path / "configs"
+
+    code = main(
+        [
+            "enumerate",
+            str(structure),
+            "--magnetic-species",
+            "Cu",
+            "--moment",
+            "1",
+            "--methods",
+            "random",
+            "--cutoff",
+            "1.5",
+            "--n-configs",
+            "8",
+            "--symmetry-dedup",
+            "--symprec",
+            "0.0002",
+            "--output-dir",
+            str(output),
+        ]
+    )
+
+    assert code == 0
+    with (output / "manifest.csv").open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert len(rows) == 2
+    assert "Generated 2 distinct configuration(s)" in capsys.readouterr().out
+
+
+def test_enumerate_symmetry_dedup_cli_reports_missing_spglib(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    structure = tmp_path / "symmetric_triplet.cif"
+    _write_symmetric_triplet_cif(structure)
+    monkeypatch.setitem(sys.modules, "spglib", None)
+
+    code = main(
+        [
+            "enumerate",
+            str(structure),
+            "--magnetic-species",
+            "Cu",
+            "--moment",
+            "1",
+            "--methods",
+            "random",
+            "--cutoff",
+            "1.5",
+            "--n-configs",
+            "2",
+            "--symmetry-dedup",
+            "--output-dir",
+            str(tmp_path / "missing"),
+        ]
+    )
+
+    assert code == 2
+    assert "--symmetry-dedup requires the optional spglib dependency" in (
+        capsys.readouterr().err
     )
 
 
