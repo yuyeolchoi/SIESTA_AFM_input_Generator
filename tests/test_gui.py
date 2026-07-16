@@ -661,6 +661,41 @@ def test_default_gui_layout_keeps_visible_inputs_wide_enough(
 def test_manual_spins_gui_table_edit_preview_and_large_csv_switch(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # Same bbox()/coordinate-identified cell-editing pattern that made
+    # test_real_tk_generate_buttons_share_edited_coordination_label flaky in
+    # full-suite runs (leftover multi-root Tk state shifts widget geometry),
+    # so it gets the same structural fix: re-run the body in a fresh
+    # subprocess instead of relying on in-process isolation.
+    if os.environ.get(_TK_SUBPROCESS_ENV_FLAG) == "1":
+        _manual_spins_gui_table_edit_preview_and_large_csv_switch(
+            monkeypatch, tmp_path
+        )
+        return
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-p",
+            "no:cacheprovider",
+            "-q",
+            f"{__file__}::test_manual_spins_gui_table_edit_preview_and_large_csv_switch",
+        ],
+        cwd=ROOT,
+        env={**os.environ, _TK_SUBPROCESS_ENV_FLAG: "1"},
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert completed.returncode == 0, (
+        "isolated subprocess re-run failed:\n"
+        f"{completed.stdout}\n{completed.stderr}"
+    )
+
+
+def _manual_spins_gui_table_edit_preview_and_large_csv_switch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     assert gui._MANUAL_SPINS_MAX_ATOMS == 60
     dependencies = gui._load_gui_dependencies()
     try:
@@ -692,6 +727,12 @@ def test_manual_spins_gui_table_edit_preview_and_large_csv_switch(
         app._edit_manual_spin_cell(
             SimpleNamespace(x=x + width // 2, y=y + height // 2)
         )
+        # Pump the event loop so the just-placed editor Entry is actually
+        # mapped before synthesizing a key event on it: on Windows Tk, a
+        # generated <Return> aimed at a not-yet-viewable widget is silently
+        # dropped, which made this test fail in a fresh process while
+        # passing inside a warmed-up full-suite run.
+        root.update()
         assert app._cell_editor is not None
         app._cell_editor.delete(0, "end")
         app._cell_editor.insert(0, "-3.25")
