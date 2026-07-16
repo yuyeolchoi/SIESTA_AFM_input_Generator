@@ -2,11 +2,21 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-
-from siesta_afm.fdf_writer import patch_fdf_text
+from ase.io.formats import UnknownFileTypeError
 from ase.units import Bohr
 
-from siesta_afm.io import parse_dm_init_spin, parse_fdf_structure, parse_xv_structure
+import siesta_afm.io as io_module
+from siesta_afm.cli import main
+from siesta_afm.fdf_writer import patch_fdf_text
+from siesta_afm.io import (
+    parse_dm_init_spin,
+    parse_fdf_structure,
+    parse_xv_structure,
+    read_structure,
+)
+
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def test_fdf_parser_preserves_species_and_order(tmp_path: Path) -> None:
@@ -36,6 +46,70 @@ AtomicCoordinatesFormat Fractional
     assert np.allclose(structure.cell, np.eye(3) * 4.0)
     assert np.allclose(structure.positions[1], [2.0, 2.0, 2.0])
     assert [row["siesta_index"] for row in structure.mapping] == [1, 2]
+
+
+def test_realistic_fdf_public_reader_preserves_order_units_and_origin() -> None:
+    structure = read_structure(FIXTURES / "realistic_mixed.fdf")
+    scale = 7.5 * Bohr
+    raw_positions = np.asarray(
+        [
+            [0.00, 0.00, 0.00],
+            [0.50, 0.50, 0.20],
+            [0.25, 0.25, 0.10],
+            [0.50, 0.00, 0.40],
+            [0.00, 0.50, 0.50],
+            [0.25, 0.75, 0.30],
+            [0.75, 0.25, 0.60],
+            [0.75, 0.75, 0.70],
+            [0.10, 0.90, 0.80],
+        ]
+    )
+
+    assert structure.symbols == [
+        "Cu",
+        "O",
+        "Ni",
+        "O",
+        "Cu",
+        "Ni",
+        "O",
+        "Ni",
+        "Cu",
+    ]
+    assert structure.species_ids == [3, 1, 2, 1, 3, 2, 1, 2, 3]
+    assert np.allclose(structure.cell, np.diag([1.0, 1.2, 1.4]) * scale)
+    assert np.allclose(
+        structure.positions,
+        (raw_positions + np.asarray([0.1, 0.2, -0.1])) * scale,
+    )
+    assert [row["siesta_index"] for row in structure.mapping] == list(range(1, 10))
+
+
+def test_realistic_fdf_cli_generate_uses_preserved_one_based_indices(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "spin.fdf"
+
+    assert (
+        main(
+            [
+                "generate",
+                str(FIXTURES / "realistic_mixed.fdf"),
+                "--magnetic-species",
+                "Cu",
+                "--method",
+                "layer",
+                "--moment",
+                "0.5",
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    rows = parse_dm_init_spin(output)
+    assert [atom_index for atom_index, _ in rows] == [1, 5, 9]
+    assert all(abs(moment) == 0.5 for _, moment in rows)
 
 
 def test_fdf_include_recursion(tmp_path: Path) -> None:
@@ -150,6 +224,47 @@ def test_xv_fallback_parser_reads_bohr_and_preserves_order(tmp_path: Path) -> No
     assert structure.symbols == ["Cu", "O"]
     assert structure.species_ids == [1, 2]
     assert np.isclose(structure.positions[1, 0], Bohr)
+
+
+def test_xv_public_reader_ase_and_fallback_paths_agree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = FIXTURES / "mixed_order.XV"
+
+    def reject_fallback(*args: object, **kwargs: object) -> None:
+        raise AssertionError("ASE failed to recognize the uppercase .XV fixture")
+
+    with monkeypatch.context() as context:
+        context.setattr(io_module, "parse_xv_structure", reject_fallback)
+        ase_result = read_structure(path)
+
+    def unrecognized_by_ase(*args: object, **kwargs: object) -> None:
+        raise UnknownFileTypeError("forced format-recognition failure")
+
+    with monkeypatch.context() as context:
+        context.setattr(io_module, "ase_read", unrecognized_by_ase)
+        fallback_result = read_structure(path)
+
+    assert ase_result.symbols == fallback_result.symbols == ["Cu", "O", "Ni", "O"]
+    assert ase_result.species_ids == fallback_result.species_ids == [2, 1, 3, 1]
+    assert np.allclose(ase_result.cell, fallback_result.cell)
+    assert np.allclose(ase_result.positions, fallback_result.positions)
+    assert ase_result.pbc == fallback_result.pbc == (True, True, True)
+    assert [row["siesta_index"] for row in ase_result.mapping] == [1, 2, 3, 4]
+
+
+def test_zmatrix_coordinates_are_rejected_explicitly(tmp_path: Path) -> None:
+    path = tmp_path / "zmatrix.fdf"
+    path.write_text(
+        "AtomicCoordinatesFormat Zmatrix\n"
+        "%block ChemicalSpeciesLabel\n1 8 O\n%endblock ChemicalSpeciesLabel\n"
+        "%block AtomicCoordinatesAndAtomicSpecies\n0 0 0 1\n"
+        "%endblock AtomicCoordinatesAndAtomicSpecies\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="unsupported AtomicCoordinatesFormat: zmatrix"):
+        read_structure(path)
 
 
 def test_dm_init_spin_accepts_sign_shorthand_and_noncollinear_angles() -> None:

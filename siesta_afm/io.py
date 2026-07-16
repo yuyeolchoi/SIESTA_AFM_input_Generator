@@ -71,6 +71,7 @@ def parse_fdf_structure(path: str | Path) -> Structure:
     text = read_fdf_with_includes(path)
     species_block = _block(text, "ChemicalSpeciesLabel")
     coords_block = _block(text, "AtomicCoordinatesAndAtomicSpecies")
+    origin_block = _block(text, "AtomicCoordinatesOrigin")
     lattice_block = _block(text, "LatticeVectors")
     if species_block is None or coords_block is None:
         raise ValueError(
@@ -144,6 +145,18 @@ def parse_fdf_structure(path: str | Path) -> Structure:
     elif coordinate_format not in {"ang", "angstrom", "notscaledcartesianang"}:
         raise ValueError(f"unsupported AtomicCoordinatesFormat: {coordinate_format}")
 
+    if origin_block is not None:
+        origin_rows = [
+            [float(value) for value in _strip_comment(raw).split()[:3]]
+            for raw in origin_block
+            if len(_strip_comment(raw).split()) >= 3
+        ]
+        if len(origin_rows) != 1:
+            raise ValueError(
+                "AtomicCoordinatesOrigin must contain exactly one vector"
+            )
+        coordinates += np.asarray(origin_rows[0], dtype=float) * lattice_constant
+
     pbc = (True, True, True) if np.any(cell) else (False, False, False)
     return Structure(symbols, coordinates, cell, pbc, species_ids, str(Path(path)))
 
@@ -191,6 +204,25 @@ def parse_xv_structure(path: str | Path) -> Structure:
     )
 
 
+def _parse_xv_species_ids(path: str | Path) -> list[int]:
+    """Read the SIESTA species ids that ASE's XV reader does not retain."""
+
+    lines = Path(path).read_text(encoding="utf-8-sig").splitlines()
+    if len(lines) < 4:
+        raise ValueError("truncated XV file")
+    count = int(lines[3].split()[0])
+    if len(lines) < count + 4:
+        raise ValueError("truncated XV atom list")
+
+    species_ids: list[int] = []
+    for raw in lines[4 : 4 + count]:
+        fields = raw.split()
+        if len(fields) < 5:
+            raise ValueError(f"invalid XV atom line: {raw}")
+        species_ids.append(int(fields[0]))
+    return species_ids
+
+
 def from_ase(atoms: Atoms, source: str | None = None) -> Structure:
     return Structure(
         list(atoms.get_chemical_symbols()),
@@ -217,6 +249,10 @@ def read_structure(
     elif suffix == ".xv":
         try:
             structure = from_ase(ase_read(file_path), str(file_path))
+            species_ids = _parse_xv_species_ids(file_path)
+            if len(species_ids) != len(structure):
+                raise ValueError("XV atom count differs between ASE and file data")
+            structure.species_ids = species_ids
         except Exception:
             structure = parse_xv_structure(file_path)
     else:

@@ -1,0 +1,25 @@
+# Realistic mixed-species FDF used to verify public loading and CLI generation.
+SystemName F33 mixed-order fixture
+NumberOfSpecies 3
+NumberOfAtoms 9
+
+lattice-constant 7.5 Bohr
+
+%block chemical-species_label
+3 29 Cu
+1 8 O
+2 28 Ni
+%endblock Chemical.Species-Label
+
+%BLOCK lattice-vectors
+1.0 0.0 0.0
+0.0 1.2 0.0
+0.0 0.0 1.4
+%endblock Lattice_Vectors
+
+atomic_coordinates-format ScaledCartesian
+%block atomic-coordinates_origin
+0.1 0.2 -0.1
+%endblock Atomic.Coordinates-Origin
+
+%include realistic_mixed_coordinates.fdf
