@@ -80,6 +80,80 @@ class _GuiDependencies:
     NavigationToolbar2Tk: Any
 
 
+@dataclass(frozen=True, slots=True)
+class _PathDialogSpec:
+    dialog: str
+    title: str
+    filetypes: tuple[tuple[str, str], ...] = ()
+    target_var: str | None = None
+    on_success: str | None = None
+
+
+_PATH_DIALOGS = {
+    "_choose_structure": _PathDialogSpec(
+        dialog="askopenfilename",
+        title="Open structure",
+        filetypes=(
+            ("Structure files", "*.cif *.xyz *.fdf *.xv *.XV *.vasp"),
+            ("POSCAR / CONTCAR", "POSCAR CONTCAR"),
+            ("All files", "*.*"),
+        ),
+    ),
+    "_choose_site_moment_file": _PathDialogSpec(
+        dialog="askopenfilename",
+        title="Open site moment CSV",
+        filetypes=(("CSV files", "*.csv"), ("All files", "*.*")),
+        target_var="site_moment_file_var",
+    ),
+    "_choose_spin_values_file": _PathDialogSpec(
+        dialog="askopenfilename",
+        title="Open direct spin values CSV",
+        filetypes=(("CSV files", "*.csv"), ("All files", "*.*")),
+        target_var="spin_values_file_var",
+    ),
+    "_choose_candidate_output": _PathDialogSpec(
+        dialog="askdirectory",
+        title="Candidate output directory",
+        target_var="candidate_output_var",
+    ),
+    "_choose_batch_group_file": _PathDialogSpec(
+        dialog="askopenfilename",
+        title="Open manual groups file",
+        filetypes=(("YAML files", "*.yaml *.yml"), ("All files", "*.*")),
+        target_var="batch_group_file_var",
+    ),
+    "_choose_base_input": _PathDialogSpec(
+        dialog="askopenfilename",
+        title="Select complete make-input FDF",
+        filetypes=(("FDF files", "*.fdf"), ("All files", "*.*")),
+        target_var="base_input_var",
+    ),
+    "_choose_candidates_dir": _PathDialogSpec(
+        dialog="askdirectory",
+        title="Select directory containing manifest.csv",
+        target_var="candidates_dir_var",
+    ),
+    "_choose_jobs_output": _PathDialogSpec(
+        dialog="askdirectory",
+        title="Job folders output directory",
+        target_var="jobs_output_var",
+    ),
+    "_choose_jobs_dir": _PathDialogSpec(
+        dialog="askdirectory",
+        title="Select jobs directory",
+        target_var="jobs_dir_var",
+        on_success="_clear_results_csv_selection",
+    ),
+    "_choose_results_csv": _PathDialogSpec(
+        dialog="askopenfilename",
+        title="Open existing results.csv",
+        filetypes=(("CSV files", "*.csv"), ("All files", "*.*")),
+        target_var="results_csv_var",
+        on_success="_clear_jobs_dir_selection",
+    ),
+}
+
+
 def _load_gui_dependencies() -> _GuiDependencies:
     """Import Tk and its matplotlib bridge only when the desktop UI is launched."""
 
@@ -1858,14 +1932,7 @@ class DesktopApp:
         self._sync_manual_spins_display()
 
     def _choose_structure(self, *, schedule: bool = True) -> bool:
-        path = self.deps.filedialog.askopenfilename(
-            title="Open structure",
-            filetypes=[
-                ("Structure files", "*.cif *.xyz *.fdf *.xv *.XV *.vasp"),
-                ("POSCAR / CONTCAR", "POSCAR CONTCAR"),
-                ("All files", "*.*"),
-            ],
-        )
+        path = self._ask_path_dialog("_choose_structure")
         if not path:
             return False
         candidate = Path(path)
@@ -1896,69 +1963,57 @@ class DesktopApp:
             self._schedule_live_update()
         return True
 
+    def _ask_path_dialog(self, name: str) -> str:
+        spec = _PATH_DIALOGS[name]
+        options: dict[str, object] = {"title": spec.title}
+        if spec.filetypes:
+            options["filetypes"] = list(spec.filetypes)
+        dialog = getattr(self.deps.filedialog, spec.dialog)
+        return dialog(**options)
+
+    def _apply_path_dialog(self, name: str) -> None:
+        spec = _PATH_DIALOGS[name]
+        if spec.target_var is None:
+            raise ValueError(f"dialog {name!r} has no target variable")
+        path = self._ask_path_dialog(name)
+        if not path:
+            return
+        getattr(self, spec.target_var).set(path)
+        if spec.on_success is not None:
+            getattr(self, spec.on_success)()
+
     def _choose_site_moment_file(self) -> None:
-        path = self.deps.filedialog.askopenfilename(
-            title="Open site moment CSV",
-            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
-        )
-        if path:
-            self.site_moment_file_var.set(path)
+        self._apply_path_dialog("_choose_site_moment_file")
 
     def _choose_spin_values_file(self) -> None:
-        path = self.deps.filedialog.askopenfilename(
-            title="Open direct spin values CSV",
-            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
-        )
-        if path:
-            self.spin_values_file_var.set(path)
+        self._apply_path_dialog("_choose_spin_values_file")
 
     def _choose_candidate_output(self) -> None:
-        path = self.deps.filedialog.askdirectory(title="Candidate output directory")
-        if path:
-            self.candidate_output_var.set(path)
+        self._apply_path_dialog("_choose_candidate_output")
 
     def _choose_batch_group_file(self) -> None:
-        path = self.deps.filedialog.askopenfilename(
-            title="Open manual groups file",
-            filetypes=[("YAML files", "*.yaml *.yml"), ("All files", "*.*")],
-        )
-        if path:
-            self.batch_group_file_var.set(path)
+        self._apply_path_dialog("_choose_batch_group_file")
 
     def _choose_base_input(self) -> None:
-        path = self.deps.filedialog.askopenfilename(
-            title="Select complete make-input FDF",
-            filetypes=[("FDF files", "*.fdf"), ("All files", "*.*")],
-        )
-        if path:
-            self.base_input_var.set(path)
+        self._apply_path_dialog("_choose_base_input")
 
     def _choose_candidates_dir(self) -> None:
-        path = self.deps.filedialog.askdirectory(
-            title="Select directory containing manifest.csv"
-        )
-        if path:
-            self.candidates_dir_var.set(path)
+        self._apply_path_dialog("_choose_candidates_dir")
 
     def _choose_jobs_output(self) -> None:
-        path = self.deps.filedialog.askdirectory(title="Job folders output directory")
-        if path:
-            self.jobs_output_var.set(path)
+        self._apply_path_dialog("_choose_jobs_output")
 
     def _choose_jobs_dir(self) -> None:
-        path = self.deps.filedialog.askdirectory(title="Select jobs directory")
-        if path:
-            self.jobs_dir_var.set(path)
-            self.results_csv_var.set("")
+        self._apply_path_dialog("_choose_jobs_dir")
 
     def _choose_results_csv(self) -> None:
-        path = self.deps.filedialog.askopenfilename(
-            title="Open existing results.csv",
-            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
-        )
-        if path:
-            self.results_csv_var.set(path)
-            self.jobs_dir_var.set("")
+        self._apply_path_dialog("_choose_results_csv")
+
+    def _clear_results_csv_selection(self) -> None:
+        self.results_csv_var.set("")
+
+    def _clear_jobs_dir_selection(self) -> None:
+        self.jobs_dir_var.set("")
 
     def _workflow_kwargs(
         self,
