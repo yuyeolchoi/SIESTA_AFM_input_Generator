@@ -106,7 +106,13 @@ def _add_site_comment_control(parser: argparse.ArgumentParser) -> None:
 
 def _add_ordering_controls(parser: argparse.ArgumentParser) -> None:
     layer_group = parser.add_mutually_exclusive_group()
-    layer_group.add_argument("--axis", choices=list("xyz"), default="z")
+    # default=None (not "z") so argparse's mutually-exclusive-group conflict
+    # detection actually fires when --axis is passed alongside
+    # --layer-direction: argparse only flags a conflict for values it
+    # considers "explicitly seen", and on Python < 3.11 a value equal to the
+    # argument's own default is not tracked as seen. Effective default of
+    # "z" is applied downstream after parsing (see `args.axis or "z"`).
+    layer_group.add_argument("--axis", choices=list("xyz"), default=None)
     layer_group.add_argument(
         "--layer-direction",
         type=float,
@@ -267,7 +273,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_site_controls(analyze, require_moment=False)
     _add_neighbor_controls(analyze)
     analyze_layer_group = analyze.add_mutually_exclusive_group()
-    analyze_layer_group.add_argument("--axis", choices=list("xyz"), default="z")
+    # See the matching comment on the `generate` --axis definition above.
+    analyze_layer_group.add_argument("--axis", choices=list("xyz"), default=None)
     analyze_layer_group.add_argument("--layer-direction", type=float, nargs=3)
     analyze.add_argument(
         "--layer-tolerance",
@@ -381,7 +388,7 @@ def _workflow_kwargs(args: argparse.Namespace) -> dict[str, Any]:
         "exclude_atoms": args.exclude_atoms,
         "adsorbate_indices": args.adsorbate_indices,
         "site_moment_file": args.site_moment_file,
-        "axis": args.axis,
+        "axis": args.axis or "z",
         "layer_direction": args.layer_direction,
         "layer_tolerance": args.layer_tolerance,
         "fractional_layers": args.fractional_layers,
@@ -556,7 +563,7 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         magnetic_species=args.magnetic_species,
         cutoff=args.cutoff,
         neighbor_shell=args.neighbor_shell,
-        axis=args.axis,
+        axis=args.axis or "z",
         layer_tolerance=args.layer_tolerance,
         fractional_layers=args.fractional_layers,
         layer_direction=args.layer_direction,

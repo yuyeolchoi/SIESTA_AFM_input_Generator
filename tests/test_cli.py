@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from siesta_afm.cli import build_parser, main
+from siesta_afm.cli import _workflow_kwargs, build_parser, main
 from siesta_afm.io import parse_dm_init_spin, read_structure
 
 
@@ -320,6 +320,47 @@ def test_layer_axis_and_direction_are_mutually_exclusive() -> None:
                 "1",
             ]
         )
+
+
+def test_axis_default_is_z_when_neither_axis_nor_layer_direction_is_passed() -> None:
+    # Regression guard: --axis defaults to None (not "z") at the argparse
+    # level so the mutually-exclusive-group conflict above is actually
+    # detected on every Python version. "z" is restored downstream via
+    # `args.axis or "z"`; this confirms that normalization still happens.
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "generate",
+            "structure.cif",
+            "--magnetic-species",
+            "Ni",
+            "--method",
+            "layer",
+            "--moment",
+            "1",
+        ]
+    )
+    assert args.axis is None
+    assert _workflow_kwargs(args)["axis"] == "z"
+
+
+def test_axis_alone_without_layer_direction_still_parses() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "generate",
+            "structure.cif",
+            "--magnetic-species",
+            "Ni",
+            "--method",
+            "layer",
+            "--moment",
+            "1",
+            "--axis",
+            "x",
+        ]
+    )
+    assert _workflow_kwargs(args)["axis"] == "x"
 
 
 def _write_triangle_xyz(path: Path) -> None:

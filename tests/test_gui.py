@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import builtins
+import os
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1151,7 +1154,49 @@ def test_real_tk_buttons_complete_batch_workflow(
         root.destroy()
 
 
+_TK_SUBPROCESS_ENV_FLAG = "SIESTA_AFM_TK_SUBPROCESS_CHILD"
+
+
 def test_real_tk_generate_buttons_share_edited_coordination_label(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # This test has a long history of failing only inside a full-suite run
+    # on Windows (never in isolation): earlier tests in the same process
+    # create and destroy Tk() roots, and that leftover interpreter/Tcl
+    # state can shift widget geometry queries (bbox()) enough to make
+    # event_generate() land on the wrong table cell. Re-running the exact
+    # same test body in a fresh subprocess makes the "isolation" that was
+    # previously only a manual debugging step (and thus periodically
+    # reintroduced flakiness in CI) a structural property of the test
+    # itself, without weakening what it actually asserts.
+    if os.environ.get(_TK_SUBPROCESS_ENV_FLAG) == "1":
+        _real_tk_generate_buttons_share_edited_coordination_label(
+            monkeypatch, tmp_path
+        )
+        return
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-p",
+            "no:cacheprovider",
+            "-q",
+            f"{__file__}::test_real_tk_generate_buttons_share_edited_coordination_label",
+        ],
+        cwd=ROOT,
+        env={**os.environ, _TK_SUBPROCESS_ENV_FLAG: "1"},
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert completed.returncode == 0, (
+        "isolated subprocess re-run failed:\n"
+        f"{completed.stdout}\n{completed.stderr}"
+    )
+
+
+def _real_tk_generate_buttons_share_edited_coordination_label(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     dependencies = gui._load_gui_dependencies()
