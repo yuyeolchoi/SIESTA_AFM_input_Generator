@@ -153,7 +153,7 @@ def test_prepare_u_sweep_writes_manifest_inputs_and_nurion_array(
         pseudopotential.read_bytes()
     )
     assert all(row["git_commit"] for row in manifest)
-    assert all(row["package_version"] == "0.3.2" for row in manifest)
+    assert all(row["package_version"] == "0.3.3" for row in manifest)
     assert all(row["git_dirty"] in {"true", "false", "unknown"} for row in manifest)
     assert result.scheduler_path is not None
     script = result.scheduler_path.read_text(encoding="utf-8")
