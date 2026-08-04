@@ -1,8 +1,11 @@
 from pathlib import Path
 
+import pytest
+
 from siesta_afm.results import (
     _find_output,
     collect_results,
+    parse_eig_band_gap,
     parse_local_spins,
     prepare_array,
 )
@@ -88,3 +91,100 @@ def test_find_output_uses_latest_mtime(tmp_path: Path) -> None:
     os.utime(older, (1, 1))
     os.utime(newer, (2, 2))
     assert _find_output(tmp_path) == newer
+
+
+def test_parse_eig_band_gap_reports_direct_indirect_and_metallic() -> None:
+    indirect = parse_eig_band_gap(
+        "0.0\n4 1 2\n1 -3 -1 2 4\n2 -4 -2 1 3\n"
+    )
+    assert indirect.gap_ev == 2.0
+    assert indirect.kind == "indirect"
+    assert indirect.vbm_ev == -1.0
+    assert indirect.cbm_ev == 1.0
+
+    direct = parse_eig_band_gap("0.0\n2 1 2\n1 -1 1\n2 -2 2\n")
+    assert direct.gap_ev == 2.0
+    assert direct.kind == "direct"
+
+    metallic = parse_eig_band_gap("0.0\n2 1 1\n1 0.0 1.0\n")
+    assert metallic.gap_ev == 0.0
+    assert metallic.kind == "metallic"
+
+    sampled_crossing = parse_eig_band_gap(
+        "0.0\n2 1 2\n1 -0.2 1.0\n2 0.3 1.2\n"
+    )
+    assert sampled_crossing.gap_ev == 0.0
+    assert sampled_crossing.kind == "metallic"
+
+
+def test_collect_results_joins_u_manifest_and_eig_gap(tmp_path: Path) -> None:
+    job = tmp_path / "U_6.0"
+    job.mkdir()
+    (tmp_path / "folders.list").write_text("U_6.0\n", encoding="utf-8")
+    (tmp_path / "u_sweep_manifest.csv").write_text(
+        "config_id,u_eff_ev,element,species_labels,folder\n"
+        "U_6.0,6.0,Cu,Cu,U_6.0\n",
+        encoding="utf-8",
+    )
+    (job / "input.fdf").write_text(
+        "%block DM.InitSpin\n1 0.7\n2 -0.7\n%endblock DM.InitSpin\n",
+        encoding="utf-8",
+    )
+    (job / "siesta.out").write_text(
+        "siesta: E_KS(eV) = -12.0\nSCF cycle converged\n"
+        "Hirshfeld Atomic Populations:\n"
+        "Atom # dQatom Atom pop Sz [e] Species\n"
+        "1 0.0 0.0 0.6 Cu\n2 0.0 0.0 -0.6 Cu\n",
+        encoding="utf-8",
+    )
+    (job / "cuo.EIG").write_text(
+        "0.0\n2 1 2\n1 -1.0 1.0\n2 -1.2 1.2\n",
+        encoding="utf-8",
+    )
+    row = collect_results(tmp_path)[0]
+    assert row["config_id"] == "U_6.0"
+    assert row["u_eff_ev"] == "6.0"
+    assert row["element"] == "Cu"
+    assert row["band_gap_ev"] == 2.0
+    assert row["band_gap_type"] == "direct"
+    assert row["band_gap_source"] == "cuo.EIG"
+    assert row["band_gap_status"] == "ok"
+    assert row["local_spins"] == "1:0.6 2:-0.6"
+    assert row["local_spin_mean_abs"] == pytest.approx(0.6)
+    assert row["local_spin_min_abs"] == pytest.approx(0.6)
+    assert row["local_spin_max_abs"] == pytest.approx(0.6)
+    assert row["exit_code"] == ""
+    assert (tmp_path / "failed_array_indices.txt").read_text(encoding="utf-8") == ""
+    assert (tmp_path / "failed_folders.list").read_text(encoding="utf-8") == ""
+
+
+def test_collect_results_records_failed_u_array_indices(tmp_path: Path) -> None:
+    job = tmp_path / "U_4.0"
+    job.mkdir()
+    (tmp_path / "folders.list").write_text("U_4.0\n", encoding="utf-8")
+    (tmp_path / "u_sweep_manifest.csv").write_text(
+        "config_id,u_eff_ev,element,species_labels,folder\n"
+        "U_4.0,4.0,Cu,Cu,U_4.0\n",
+        encoding="utf-8",
+    )
+    (job / "exit_code").write_text("7\n", encoding="utf-8")
+    row = collect_results(tmp_path)[0]
+    assert row["exit_code"] == 7
+    assert row["status"] == "run-failed"
+    assert (tmp_path / "failed_array_indices.txt").read_text(
+        encoding="utf-8"
+    ) == "1\n"
+    assert (tmp_path / "failed_folders.list").read_text(
+        encoding="utf-8"
+    ) == "U_4.0\n"
+
+
+def test_collect_results_keeps_eig_parse_diagnostic(tmp_path: Path) -> None:
+    job = tmp_path / "001"
+    job.mkdir()
+    (job / "siesta.out").write_text("SCF cycle converged\n", encoding="utf-8")
+    (job / "broken.EIG").write_text("not an EIG\n", encoding="utf-8")
+    row = collect_results(tmp_path)[0]
+    assert row["band_gap_source"] == "broken.EIG"
+    assert row["band_gap_status"] == "parse-error"
+    assert "truncated" in str(row["band_gap_error"])

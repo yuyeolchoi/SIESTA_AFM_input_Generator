@@ -82,6 +82,9 @@ def render_dm_init_spin(
                 f"{index + 1:6d} {abs(rows[index]):12.6f} "
                 f"{theta:10.4f} {phi:10.4f}"
             )
+        elif method == "manual-spins":
+            value_text = format(rows[index], ".17g")
+            line = f"{index + 1:6d} {value_text:>12}"
         else:
             line = f"{index + 1:6d} {rows[index]:12.6f}"
         if structure is not None and site_comments and 0 <= index < len(structure):

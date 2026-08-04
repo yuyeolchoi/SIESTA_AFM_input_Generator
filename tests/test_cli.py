@@ -5,11 +5,101 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from siesta_afm import __version__
 from siesta_afm.cli import _workflow_kwargs, build_parser, main
 from siesta_afm.io import parse_dm_init_spin, read_structure
 
 
 ROOT = Path(__file__).parents[1]
+
+
+def test_runtime_version_matches_project_metadata() -> None:
+    metadata = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert f'version = "{__version__}"' in metadata
+
+
+def test_manual_spins_cli_roundtrips_validated_signed_values(tmp_path: Path) -> None:
+    values = tmp_path / "cuo_spins.csv"
+    values.write_text(
+        "atom_index,element,spin\n"
+        "1,Cu,0.712345678901234\n3,Cu,-0.498765432109876\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "manual_spins.fdf"
+    assert (
+        main(
+            [
+                "generate",
+                str(ROOT / "examples" / "input.fdf"),
+                "--magnetic-species",
+                "Cu",
+                "--method",
+                "manual-spins",
+                "--spin-values-file",
+                str(values),
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    assert parse_dm_init_spin(output) == [
+        (1, 0.712345678901234),
+        (3, -0.498765432109876),
+    ]
+
+
+def test_prepare_u_sweep_cli_from_manual_reference(tmp_path: Path) -> None:
+    values = tmp_path / "cuo_spins.csv"
+    values.write_text("atom_index,spin\n1,0.7\n3,-0.7\n", encoding="utf-8")
+    base = tmp_path / "base.fdf"
+    assert (
+        main(
+            [
+                "make-input",
+                str(ROOT / "examples" / "input.fdf"),
+                "--magnetic-species",
+                "Cu",
+                "--method",
+                "manual-spins",
+                "--spin-values-file",
+                str(values),
+                "--hubbard-u",
+                "Cu=6.0",
+                "--output",
+                str(base),
+            ]
+        )
+        == 0
+    )
+    output = tmp_path / "u_jobs"
+    assert (
+        main(
+            [
+                "prepare-u-sweep",
+                str(base),
+                "--reference-spin",
+                str(base),
+                "--element",
+                "Cu",
+                "--u-values",
+                "4",
+                "6",
+                "--scheduler",
+                "neuron-slurm",
+                "--partition",
+                "skl",
+                "--run-command",
+                "srun siesta",
+                "--output-dir",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    assert (output / "U_4.0" / "input.fdf").is_file()
+    assert (output / "U_6.0" / "input.fdf").is_file()
+    assert (output / "run_u_array.slurm").is_file()
 
 
 def test_make_input_cli_writes_roundtrippable_template_and_warning(

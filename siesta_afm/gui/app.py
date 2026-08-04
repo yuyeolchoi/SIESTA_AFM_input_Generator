@@ -1247,8 +1247,12 @@ class DesktopApp:
         )
         result_widths = {
             "config_id": 70,
+            "u_eff_ev": 75,
             "total_energy": 100,
+            "band_gap_ev": 95,
+            "band_gap_type": 95,
             "final_net_spin": 100,
+            "local_spin_mean_abs": 135,
             "sign_retention": 100,
             "collapsed_atoms": 105,
             "spin_population_source": 170,
@@ -1599,7 +1603,10 @@ class DesktopApp:
             editor = self.ttk.Entry(self.magnetization_tree, textvariable=variable)
         self._cell_editor = editor
         editor.place(x=x, y=y, width=width, height=height)
-        editor.focus_set()
+        try:
+            editor.focus_force()
+        except self.tk.TclError:
+            editor.focus_set()
 
         def close(*, save: bool) -> None:
             if self._cell_editor is None:

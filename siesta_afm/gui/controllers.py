@@ -61,8 +61,12 @@ _CANDIDATE_COLUMNS = (
 )
 _RESULT_COLUMNS = (
     "config_id",
+    "u_eff_ev",
     "total_energy",
+    "band_gap_ev",
+    "band_gap_type",
     "final_net_spin",
+    "local_spin_mean_abs",
     "sign_retention",
     "collapsed_atoms",
     "spin_population_source",
@@ -1091,6 +1095,16 @@ def _truthy(value: object) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y"}
 
 
+def _u_value(row: Mapping[str, object]) -> float | None:
+    value = row.get("u_eff_ev")
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        return float(str(value))
+    except ValueError:
+        return None
+
+
 def results_table_rows(
     rows: Sequence[Mapping[str, object]],
     *,
@@ -1103,26 +1117,48 @@ def results_table_rows(
 
     if energy_window_ev < 0:
         raise ValueError("energy window must be nonnegative")
-    ordered = sorted(
-        rows,
-        key=lambda row: (
-            _energy_value(row) is None,
-            _energy_value(row) if _energy_value(row) is not None else float("inf"),
-            str(row.get("config_id", "")),
-        ),
-    )
-    converged_energies = [
-        energy
-        for row in ordered
-        if _truthy(row.get("scf_converged"))
-        for energy in [_energy_value(row)]
-        if energy is not None
-    ]
-    minimum = min(converged_energies) if converged_energies else None
+    u_grouped = any(_u_value(row) is not None for row in rows)
+    if u_grouped:
+        ordered = sorted(
+            rows,
+            key=lambda row: (
+                _u_value(row) is None,
+                _u_value(row) if _u_value(row) is not None else float("inf"),
+                _energy_value(row) is None,
+                _energy_value(row)
+                if _energy_value(row) is not None
+                else float("inf"),
+                str(row.get("config_id", "")),
+            ),
+        )
+    else:
+        ordered = sorted(
+            rows,
+            key=lambda row: (
+                _energy_value(row) is None,
+                _energy_value(row)
+                if _energy_value(row) is not None
+                else float("inf"),
+                str(row.get("config_id", "")),
+            ),
+        )
+    group_energies: dict[float | None, list[float]] = {}
+    for row in ordered:
+        energy = _energy_value(row)
+        if _truthy(row.get("scf_converged")) and energy is not None:
+            group = _u_value(row) if u_grouped else None
+            group_energies.setdefault(group, []).append(energy)
+    minima = {
+        group: min(energies)
+        for group, energies in group_energies.items()
+        if not u_grouped or len(energies) > 1
+    }
     table_rows: list[ResultTableRow] = []
     for row in ordered:
         energy = _energy_value(row)
         converged = _truthy(row.get("scf_converged"))
+        group = _u_value(row) if u_grouped else None
+        minimum = minima.get(group)
         tags: list[str] = []
         if not converged:
             tags.append("unconverged")

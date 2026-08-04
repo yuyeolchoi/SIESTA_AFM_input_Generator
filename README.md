@@ -130,7 +130,10 @@ and [Materials Project U-value methodology](https://docs.materialsproject.org/me
 - `graph-coloring`: uses DSATUR proper coloring to build up to k sublattice candidates and maps a collinear spin to each color.
 - `propagation-vector`: sets the sign from `sign(cos(2π q·r + phase))`.
 - `manual-groups`: uses `--up-atoms`, `--down-atoms`, or a YAML `--group-file`.
-- `manual-spins`: directly preserves signed per-atom values from `--spin-values` or `--spin-values-file`; it is intentionally excluded from candidate enumeration.
+- `manual-spins`: directly preserves signed per-atom values from `--spin-values`
+  or an `atom_index,spin` CSV passed to `--spin-values-file`. It is the
+  reproducible choice for a validated AFM reference and is intentionally
+  excluded from candidate enumeration.
 - `by-species`: splits distinct-element sublattices with `--up-species` and `--down-species`.
 - `by-coordination`: splits Td/Oh sublattices by each magnetic atom's first anion-shell coordination number.
 - `random`: produces reproducible random initial signs with `--seed`. This is not a physical magnetic-ordering model.
@@ -168,6 +171,12 @@ siesta-afm generate structure.cif \
   --down-atoms 3,6,9,12 \
   --moment 0.5
 
+siesta-afm generate validated_CuO.fdf \
+  --magnetic-species Cu \
+  --method manual-spins \
+  --spin-values-file CuO_AF1_spins.csv \
+  --output CuO_AF1_spin.fdf
+
 siesta-afm generate spinel.cif \
   --magnetic-species Fe \
   --method by-coordination \
@@ -188,6 +197,13 @@ siesta-afm generate inverse_spinel.cif \
 ```
 
 `--moment 0.5` applies the same magnitude to every selected element, while `--moment Cu=0.5 Ni=1.0` sets per-element values. `Element@CN=value` distinguishes different coordination environments of the same element. The resolution priority is site CSV > `Element@CN` > `Element` > global value. The CSV given to `--site-moment-file moments.csv` requires at least `atom_index,moment` columns and may optionally include `element,oxidation_state` columns.
+
+`manual-spins` is intentionally different from `--site-moment-file`: its
+`spin` column is signed and is written exactly, including zero. Every selected
+magnetic atom must occur exactly once; duplicate, missing, out-of-range, or
+element-mismatched rows fail before output is written. Do not combine it with
+`--moment`, `--moment-config`, or `--site-moment-file`. In the GUI, select
+`manual-spins` and browse to the same CSV in **Signed spin CSV**.
 
 When both `--moment` and `--moment-config` are omitted, the following generic
 high-spin guesses are used as initial values and a warning lists every default that
@@ -423,11 +439,93 @@ Each row describes one spin file; use labels such as `by-coordination-ls` and
 and AFM score for that file. `prepare-array` can then patch all of them into the
 same base input. Moment-sweep manifests retain these base columns and insert one
 `moment_<target>` column per swept target. A Hubbard-U sweep is different:
-because U belongs to the base calculation settings, make a separate base input
-and job array for each U. For per-atom oxidation-state assignments,
+use `prepare-u-sweep` below to create a separately validated input and job-array
+entry for each U. For per-atom oxidation-state assignments,
 `--site-moment-file` is safer than relying on coordination alone.
 
-`collect-results` reads energy, final net spin, per-atom Mulliken/Hirshfeld spin, sign-retention fraction, collapse, and convergence markers from the common SIESTA `.out`/`.log` representations in each folder and writes `results.csv`. Different SIESTA versions may use different output wording, which can require extending the regular expressions.
+`collect-results` reads energy, final net spin, per-atom Mulliken/Hirshfeld spin,
+sign-retention fraction, collapse, and convergence markers from common SIESTA
+`.out`/`.log` representations. If `u_sweep_manifest.csv` is present, it also
+joins `u_eff_ev`, element, and species labels by folder. A SIESTA `.EIG` file
+adds the sampled SCF k-mesh gap and direct/indirect classification; this is not
+an interpolated band-structure gap. Missing or unrecognized output is reported
+in explicit status columns instead of silently becoming zero. SIESTA versions
+can change output wording, so validate the parser against a real output fixture
+from the production build. `local_spins` preserves the parsed per-site values;
+the mean/minimum/maximum absolute local-spin columns summarize the selected
+magnetic sites.
+
+## Reproducible Hubbard-U screening
+
+Use `prepare-u-sweep` when the magnetic reference has already been validated
+and only the d-shell effective U must change. The base FDF must contain one
+top-level `DFTU.Proj` or `LDAU.Proj` block with one explicit d projector per
+selected species and `J=0`. The command patches only that projector's U token,
+preserves atom order and the exact reference `DM.InitSpin`, and refuses
+ambiguous input.
+
+`--reference-spin` may point to either a complete validated FDF or a spin
+fragment. If the top-level U=6 base already contains the validated
+`DM.InitSpin`, pass that same FDF as both `base_input` and `--reference-spin`;
+if the block lives in an include, pass the include file itself.
+
+Run one U=6 eV pilot on the target KISTI system before submitting the full
+array. After confirming that its SIESTA build, pseudopotential hashes,
+convergence, local Cu moments, AFM sign retention, and gap agree with the
+validated workstation run, prepare a coarse CuO sweep as follows:
+
+```bash
+siesta-afm prepare-u-sweep CuO_U6_validated.fdf \
+  --reference-spin CuO_AF1_spin.fdf \
+  --element Cu --u-values 0 2 4 6 8 \
+  --copy-file Cu.psml --copy-file O.psml \
+  --scheduler nurion-pbs --queue normal \
+  --tasks-per-node 68 --max-concurrent 2 \
+  --module siesta/5.4 --run-command "mpirun siesta" \
+  --output-dir cuo_u_coarse
+
+# On Neuron, use for example:
+# --scheduler neuron-slurm --partition PARTITION --run-command "srun siesta"
+```
+
+Each `U_X.Y` directory contains `input.fdf`, `RUN.fdf`, and every repeated
+`--copy-file`. Copy support is intentionally basename-only; make the base input
+self-contained or pass every top-level include and pseudopotential without
+colliding names. `u_sweep_manifest.csv` records the U value, patched species,
+input/reference/support-file hashes, package version, Git commit, and dirty-tree
+flag. `folders.list` is the
+single source of truth for the PBS/SLURM array index. `--species-label CuA CuB`
+can restrict which Cu-labelled projectors are patched when that is scientifically
+intentional.
+
+Nurion scripts default to its required SIESTA application accounting directive
+`#PBS -A siesta`. Override that value with `--pbs-application` only if KISTI
+changes the registered application code. `--project` is reserved for an
+optional PBS project name and emits the separate `#PBS -P` directive.
+
+After the jobs finish:
+
+```bash
+siesta-afm collect-results cuo_u_coarse
+```
+
+The scheduler wrapper writes `exit_code` in each folder. Collection adds it to
+`results.csv` and writes comma-separated `failed_array_indices.txt` plus
+`failed_folders.list` for unambiguous nonzero exits. Inspect the failed logs and
+inputs before resubmitting only those indices; a missing exit code is treated as
+incomplete, not automatically failed.
+
+Do not rank different U values by their raw total energies: changing U changes
+the energy functional. Select a range using consistently calculated observables
+such as gap, Cu local moment, retained AFM order, structural behavior, and—when
+needed—the AFM–FM energy difference calculated at the same U. Keep structure,
+XC, basis, pseudopotentials, k-grid, MeshCutoff, smearing, and SCF settings fixed
+through a fixed-geometry screening. The projector syntax follows the
+[SIESTA DFT+U reference](https://docs.siesta-project.org/projects/siesta/en/5.4/reference/siesta.html);
+the generated array directives follow the KISTI
+[Nurion PBS](https://docs-ksc.gitbook.io/nurion-user-guide-eng/appendix/appendix-1-main-keywords-for-job-scripts)
+and [Neuron SLURM](https://docs-ksc.gitbook.io/neuron-user-guide-eng/system/running-jobs-through-scheduler-slurm)
+guides.
 
 ### The same workflow in the GUI
 
@@ -451,7 +549,13 @@ After running SIESTA outside this tool, use `Results` either to collect a jobs
 directory or to load an existing `results.csv` without collecting again. Rows
 are sorted by ascending `total_energy`; unconverged rows are gray, and converged
 states within 0.01 eV of the lowest energy are highlighted as a group. The GUI
-does not automatically choose one of several close candidates.
+also shows manifest U and `.EIG` gap columns when available. It does not
+compare raw energies across different U values: U-sweep rows are sorted by U,
+and near-ground highlighting is applied only when multiple converged states
+share the same U. It does not automatically choose one of several close
+candidates. `manual-spins` is available in the main generation controls;
+U-sweep folder and scheduler
+preparation remains an explicit CLI operation.
 
 Drag the horizontal divider between the 3D preview and the results notebook to
 give `Batch workflow` more vertical space. Each of its three subtabs also has a

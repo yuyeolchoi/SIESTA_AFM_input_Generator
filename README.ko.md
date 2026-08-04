@@ -76,7 +76,9 @@ siesta-afm patch examples/input.fdf \
 - `graph-coloring`: DSATUR proper coloring으로 최대 k개 부격자 후보를 만들고 색별 collinear spin을 매핑합니다.
 - `propagation-vector`: `sign(cos(2π q·r + phase))`로 부호를 정합니다.
 - `manual-groups`: `--up-atoms`, `--down-atoms` 또는 YAML `--group-file`을 사용합니다.
-- `manual-spins`: `--spin-values` 또는 `--spin-values-file`의 원자별 부호 있는 값을 그대로 보존합니다. 사용자 명시 배정이므로 후보 enumeration에서는 제외됩니다.
+- `manual-spins`: `--spin-values` 또는 `--spin-values-file`의 `atom_index,spin`
+  CSV에서 원자별 부호 있는 값을 그대로 보존합니다. 검증된 AFM reference를 재현할 때
+  적합하며 사용자 명시 배정이므로 후보 enumeration에서는 제외됩니다.
 - `by-species`: 서로 다른 원소 sublattice를 `--up-species`와 `--down-species`로 나눕니다.
 - `by-coordination`: 자기 원자의 첫 anion shell 배위수로 Td/Oh sublattice를 나눕니다.
 - `random`: `--seed`로 재현 가능한 무작위 초기 부호를 만듭니다. 물리적 자기질서 모델은 아닙니다.
@@ -113,6 +115,12 @@ siesta-afm generate structure.cif \
   --down-atoms 3,6,9,12 \
   --moment 0.5
 
+siesta-afm generate validated_CuO.fdf \
+  --magnetic-species Cu \
+  --method manual-spins \
+  --spin-values-file CuO_AF1_spins.csv \
+  --output CuO_AF1_spin.fdf
+
 siesta-afm generate spinel.cif \
   --magnetic-species Fe \
   --method by-coordination \
@@ -133,6 +141,12 @@ siesta-afm generate inverse_spinel.cif \
 ```
 
 `--moment 0.5`는 모든 선택 원소에 같은 크기를 쓰고, `--moment Cu=0.5 Ni=1.0`은 원소별 값을 씁니다. `Element@CN=value`는 같은 원소의 서로 다른 배위 환경을 구분합니다. 적용 우선순위는 site CSV > `Element@CN` > `Element` > 전역 값입니다. `--site-moment-file moments.csv`의 CSV에는 최소 `atom_index,moment` 열이 필요하고, 선택적으로 `element,oxidation_state` 열을 둘 수 있습니다.
+
+`manual-spins`는 `--site-moment-file`과 다릅니다. `spin` 열은 부호가 있으며 0을 포함해
+그대로 기록됩니다. 선택한 모든 자기 원자가 정확히 한 번 있어야 하고 중복, 누락, 범위
+이탈 또는 원소 불일치는 파일을 쓰기 전에 오류가 됩니다. `--moment`,
+`--moment-config`, `--site-moment-file`과 동시에 사용하지 마십시오. GUI에서는
+`manual-spins`를 선택한 뒤 **Signed spin CSV**에서 같은 CSV를 지정합니다.
 
 `--moment`와 `--moment-config`를 모두 생략하면 다음의 일반적인 고스핀 추정값을
 초기값으로 사용하며, 실제 적용된 기본값은 반드시 경고로 나열됩니다.
@@ -363,11 +377,83 @@ config_id,method,n_up,n_down,net_spin,afm_score,file
 `by-coordination-hs` 같은 label을 쓰고, 해당 파일의 up/down 수, 순스핀, AFM score를
 유지하거나 다시 계산하십시오. 그러면 `prepare-array`가 모든 후보를 같은 베이스 입력에
 patch할 수 있습니다. Moment 스윕 manifest는 이 기본 열을 유지하면서 스윕 대상마다
-`moment_<target>` 열을 하나씩 추가합니다. Hubbard U는 베이스 계산 설정이므로 U마다
-별도의 베이스 입력과 작업 배열을 만들어야 합니다. 원자별 산화수 배정에는 배위수에
-의존하기보다 `--site-moment-file`을 사용하는 편이 안전합니다.
+`moment_<target>` 열을 하나씩 추가합니다. Hubbard U 스윕은 아래의
+`prepare-u-sweep`으로 U마다 별도로 검증된 입력과 job-array 항목을 만듭니다. 원자별
+산화수 배정에는 배위수에 의존하기보다 `--site-moment-file`을 사용하는 편이 안전합니다.
 
-`collect-results`는 각 폴더의 일반적인 SIESTA `.out`/`.log` 표현에서 에너지, 최종 순스핀, 원자별 Mulliken/Hirshfeld spin, 부호 유지율, collapse 및 수렴 표지를 읽어 `results.csv`로 씁니다. SIESTA 버전에 따라 출력 문구가 다르면 정규식 확장이 필요할 수 있습니다.
+`collect-results`는 각 폴더의 일반적인 SIESTA `.out`/`.log` 표현에서 에너지, 최종
+순스핀, 원자별 Mulliken/Hirshfeld spin, 부호 유지율, collapse 및 수렴 표지를 읽습니다.
+`u_sweep_manifest.csv`가 있으면 폴더별 `u_eff_ev`, 원소와 species label도 결합합니다.
+SIESTA `.EIG`가 있으면 SCF k-mesh에서 표본화한 gap과 direct/indirect 구분을 추가합니다.
+이는 보간한 band-structure gap이 아닙니다. 출력이 없거나 인식되지 않으면 0으로 처리하지
+않고 상태 열에 명시합니다. SIESTA 버전별 문구 차이가 있으므로 production build의 실제
+출력 fixture로 parser를 검증해야 합니다.
+`local_spins`는 파싱한 원자별 값을 보존하고, local-spin 절댓값의 평균/최솟값/최댓값 열은
+선택한 자기 원자를 요약합니다.
+
+## 재현 가능한 Hubbard-U 스크리닝
+
+검증된 자기 기준 상태는 유지하고 d-shell의 유효 U만 바꿀 때 `prepare-u-sweep`을
+사용합니다. 베이스 FDF에는 top-level `DFTU.Proj` 또는 `LDAU.Proj` 블록이 정확히 하나
+있어야 하며, 선택 species마다 명시적인 d projector 하나와 `J=0`이 필요합니다. 명령은
+해당 projector의 U token만 바꾸고 원자 순서와 reference `DM.InitSpin`을 정확히
+보존합니다. 모호한 입력은 추측하지 않고 중단합니다.
+
+`--reference-spin`에는 완전한 검증 FDF 또는 spin fragment를 지정할 수 있습니다. U=6
+베이스의 최상위 파일에 검증된 `DM.InitSpin`이 이미 있으면 `base_input`과
+`--reference-spin`에 같은 FDF를 쓰고, block이 include 파일에 있으면 그 include 파일을
+직접 지정합니다.
+
+전체 배열을 제출하기 전에 목표 KISTI 시스템에서 U=6 eV 한 건을 pilot으로 실행하십시오.
+SIESTA build, pseudopotential hash, 수렴, Cu local moment, AFM 부호 유지와 gap이 검증된
+workstation 결과와 맞는 것을 확인한 다음 CuO coarse sweep을 준비합니다.
+
+```bash
+siesta-afm prepare-u-sweep CuO_U6_validated.fdf \
+  --reference-spin CuO_AF1_spin.fdf \
+  --element Cu --u-values 0 2 4 6 8 \
+  --copy-file Cu.psml --copy-file O.psml \
+  --scheduler nurion-pbs --queue normal \
+  --tasks-per-node 68 --max-concurrent 2 \
+  --module siesta/5.4 --run-command "mpirun siesta" \
+  --output-dir cuo_u_coarse
+
+# Neuron 예:
+# --scheduler neuron-slurm --partition PARTITION --run-command "srun siesta"
+```
+
+각 `U_X.Y` 폴더에는 `input.fdf`, `RUN.fdf`와 반복 지정한 모든 `--copy-file`이 들어갑니다.
+지원 파일은 의도적으로 basename으로만 복사하므로 베이스 입력을 self-contained하게 만들거나
+서로 이름이 겹치지 않는 모든 top-level include와 pseudopotential을 전달하십시오.
+`u_sweep_manifest.csv`에는 U, 수정한 species, 입력/reference/지원 파일 hash, 패키지 버전,
+Git commit과 dirty-tree 여부가 기록됩니다. `folders.list`가 PBS/SLURM array index의 단일
+기준입니다. 과학적으로 의도한 경우 `--species-label CuA CuB`로 수정할 Cu label을 제한할
+수 있습니다.
+
+Nurion 스크립트에는 필수 SIESTA application accounting 지시자인
+`#PBS -A siesta`가 기본으로 들어갑니다. KISTI의 등록 코드가 바뀐 경우에만
+`--pbs-application`으로 덮어쓰십시오. `--project`는 선택적인 PBS project 이름용이며
+별도의 `#PBS -P` 지시자를 생성합니다.
+
+작업 종료 후 다음처럼 수집합니다.
+
+```bash
+siesta-afm collect-results cuo_u_coarse
+```
+
+Scheduler wrapper는 각 폴더에 `exit_code`를 씁니다. 결과 수집 시 이 값을
+`results.csv`에 추가하고, 0이 아닌 종료만 쉼표 구분 `failed_array_indices.txt`와
+`failed_folders.list`에 기록합니다. 로그와 입력을 확인한 뒤 해당 index만 재제출하십시오.
+종료 코드가 없는 작업은 자동 실패가 아니라 미완료로 취급합니다.
+
+서로 다른 U의 raw total energy를 순위화하지 마십시오. U가 바뀌면 에너지 functional도
+바뀝니다. 같은 조건으로 계산한 gap, Cu local moment, AFM 유지, 구조 거동과 필요하면 같은
+U 안의 AFM–FM 에너지 차이로 후보 범위를 고릅니다. fixed-geometry screening 동안 구조,
+XC, basis, pseudopotential, k-grid, MeshCutoff, smearing과 SCF 설정을 고정하십시오.
+Projector 문법은 [SIESTA DFT+U reference](https://docs.siesta-project.org/projects/siesta/en/5.4/reference/siesta.html),
+배열 지시자는 KISTI [Nurion PBS](https://docs-ksc.gitbook.io/nurion-user-guide-eng/appendix/appendix-1-main-keywords-for-job-scripts)와
+[Neuron SLURM](https://docs-ksc.gitbook.io/neuron-user-guide-eng/system/running-jobs-through-scheduler-slurm)
+가이드를 따릅니다.
 
 ### GUI에서 같은 워크플로 사용하기
 
@@ -389,7 +475,11 @@ SIESTA input (make-input)...`으로 디스크에 저장한 완전한 FDF, `manif
 도구 밖에서 SIESTA를 실행한 뒤 `Results`에서 jobs 디렉터리를 새로 수집하거나 기존
 `results.csv`를 재수집 없이 불러올 수 있습니다. 행은 `total_energy` 오름차순이고,
 미수렴 행은 회색, 최저 에너지에서 0.01 eV 이내인 수렴 상태들은 한 그룹으로 강조됩니다.
-에너지가 근접한 후보가 여러 개여도 GUI가 하나를 자동으로 선택하지 않습니다.
+manifest U와 `.EIG` gap이 있으면 해당 열도 표시합니다. 에너지가 근접한 후보가 여러 개여도
+GUI가 서로 다른 U의 raw energy를 비교하지 않습니다. U-sweep 행은 U순으로 정렬하고 같은
+U에 수렴 상태가 둘 이상일 때만 near-ground 강조를 적용합니다. 후보가 여러 개여도 하나를
+자동으로 선택하지 않습니다. `manual-spins`는 주 생성 화면에서 사용할 수
+있고 U-sweep 폴더와 scheduler 생성은 명시적인 CLI 작업으로 유지합니다.
 
 3D 미리보기와 결과 노트북 사이의 가로 구분선을 드래그하면 `Batch workflow`에 더 많은
 세로 공간을 줄 수 있습니다. 이 워크플로의 세 서브탭에는 각각 세로 스크롤바와 마우스 휠

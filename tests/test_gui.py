@@ -414,6 +414,25 @@ def test_workflow_kwargs_gate_method_specific_inputs_without_tk() -> None:
     assert coordinated["max_colors"] == 4
     assert coordinated["group_file"] is None
 
+def test_gui_manual_spins_controller_preserves_reference_values(
+    tmp_path: Path,
+) -> None:
+    signed = tmp_path / "signed.csv"
+    signed.write_text(
+        "atom_index,element,spin\n1,Cu,0.72\n2,Cu,-0.55\n"
+        "3,Cu,0.48\n4,Cu,-0.61\n",
+        encoding="utf-8",
+    )
+    result = gui.run_generation(
+        gui.GenerationParams(
+            structure_path=ROOT / "examples" / "CuO_bulk.cif",
+            magnetic_species=("Cu",),
+            method="manual-spins",
+            spin_values_file=signed,
+        )
+    )
+    assert result.spins == {0: 0.72, 1: -0.55, 2: 0.48, 3: -0.61}
+
 
 def test_coordination_use_toggle_is_independent_and_survives_refresh() -> None:
     structure = read_structure(
@@ -1279,6 +1298,35 @@ def test_batch_controller_preserves_missing_spglib_error(
         )
 
 
+def test_u_sweep_results_are_sorted_and_compared_only_within_same_u() -> None:
+    rows = gui.results_table_rows(
+        [
+            {
+                "config_id": "U6-only",
+                "u_eff_ev": "6.0",
+                "total_energy": -120.0,
+                "scf_converged": True,
+            },
+            {
+                "config_id": "U4-b",
+                "u_eff_ev": "4.0",
+                "total_energy": -100.995,
+                "scf_converged": True,
+            },
+            {
+                "config_id": "U4-a",
+                "u_eff_ev": "4.0",
+                "total_energy": -101.0,
+                "scf_converged": True,
+            },
+        ]
+    )
+    assert [row.values[0] for row in rows] == ["U4-a", "U4-b", "U6-only"]
+    assert rows[0].tags == ("near_ground",)
+    assert rows[1].tags == ("near_ground",)
+    assert rows[2].tags == ()
+
+
 def test_batch_prepare_and_existing_results_wrappers(tmp_path: Path) -> None:
     base = tmp_path / "base.fdf"
     base.write_text("SpinPolarized false\n", encoding="utf-8")
@@ -1357,8 +1405,9 @@ def test_batch_controllers_complete_workflow_without_tk(tmp_path: Path) -> None:
 
     rows = gui.collect_or_load_results(jobs_dir=jobs)
     displayed = gui.results_table_rows(rows)
-    assert displayed[0].values[0:2] == ("001", "-11.25")
-    assert displayed[0].values[6] == "True"
+    assert displayed[0].values[0] == "001"
+    assert displayed[0].values[gui._RESULT_COLUMNS.index("total_energy")] == "-11.25"
+    assert displayed[0].values[gui._RESULT_COLUMNS.index("scf_converged")] == "True"
     assert displayed[0].tags == ("near_ground",)
 
 
@@ -1442,8 +1491,8 @@ def test_real_tk_buttons_complete_batch_workflow(
         assert len(result_items) == 1
         values = app.collected_results_tree.item(result_items[0], "values")
         assert values[0] == "001"
-        assert values[1] == "-11.25"
-        assert values[6] == "True"
+        assert values[gui._RESULT_COLUMNS.index("total_energy")] == "-11.25"
+        assert values[gui._RESULT_COLUMNS.index("scf_converged")] == "True"
         assert app.collected_results_tree.item(result_items[0], "tags") == (
             "near_ground",
         )

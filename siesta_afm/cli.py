@@ -21,6 +21,7 @@ from .magnetic_sites import (
 )
 from .ordering import NonBipartiteError
 from .results import collect_results, prepare_array
+from .u_screening import prepare_u_sweep
 from .validation import (
     analyze_structure,
     format_analysis,
@@ -443,6 +444,59 @@ def build_parser() -> argparse.ArgumentParser:
     array.add_argument("--output-dir", required=True)
     array.set_defaults(func=_cmd_prepare_array)
 
+    u_sweep = subparsers.add_parser(
+        "prepare-u-sweep",
+        help="create one validated SIESTA calculation folder per Hubbard U value",
+    )
+    u_sweep.add_argument("base_input")
+    u_sweep.add_argument("--reference-spin", required=True)
+    u_sweep.add_argument("--element", required=True)
+    u_sweep.add_argument("--u-values", type=float, nargs="+", required=True)
+    u_sweep.add_argument(
+        "--species-label",
+        dest="species_labels",
+        nargs="+",
+        help="restrict the sweep to named DFT+U species labels of the element",
+    )
+    u_sweep.add_argument(
+        "--copy-file",
+        action="append",
+        default=[],
+        dest="support_files",
+        metavar="PATH",
+        help=(
+            "copy a pseudopotential or top-level support file into every U "
+            "folder (repeatable)"
+        ),
+    )
+    u_sweep.add_argument("--output-dir", required=True)
+    u_sweep.add_argument(
+        "--scheduler", choices=["nurion-pbs", "neuron-slurm"]
+    )
+    u_sweep.add_argument("--job-name", default="cuo_u_sweep")
+    u_sweep.add_argument(
+        "--pbs-application",
+        default="siesta",
+        help="Nurion #PBS -A application code (default: siesta)",
+    )
+    u_sweep.add_argument(
+        "--project",
+        help="optional Nurion #PBS -P project name (not the application code)",
+    )
+    u_sweep.add_argument("--queue")
+    u_sweep.add_argument("--partition")
+    u_sweep.add_argument("--walltime", default="04:00:00")
+    u_sweep.add_argument("--nodes", type=int, default=1)
+    u_sweep.add_argument("--tasks-per-node", type=int, default=1)
+    u_sweep.add_argument("--max-concurrent", type=int)
+    u_sweep.add_argument("--module")
+    u_sweep.add_argument(
+        "--run-command",
+        default="siesta",
+        help="single-line command placed before '< RUN.fdf > siesta.out'",
+    )
+    u_sweep.set_defaults(func=_cmd_prepare_u_sweep)
+
     collect = subparsers.add_parser(
         "collect-results", help="collect energies and final magnetic states"
     )
@@ -797,6 +851,37 @@ def _cmd_prepare_array(args: argparse.Namespace) -> int:
         template=args.template,
     )
     print(f"Prepared {len(folders)} job folder(s) in {args.output_dir}")
+    return 0
+
+
+def _cmd_prepare_u_sweep(args: argparse.Namespace) -> int:
+    result = prepare_u_sweep(
+        args.base_input,
+        args.reference_spin,
+        args.output_dir,
+        element=args.element,
+        u_values=args.u_values,
+        species_labels=args.species_labels,
+        support_files=args.support_files,
+        scheduler=args.scheduler,
+        job_name=args.job_name,
+        pbs_application=args.pbs_application,
+        project=args.project,
+        queue=args.queue,
+        partition=args.partition,
+        walltime=args.walltime,
+        nodes=args.nodes,
+        tasks_per_node=args.tasks_per_node,
+        max_concurrent=args.max_concurrent,
+        module=args.module,
+        run_command=args.run_command,
+    )
+    print(
+        f"Prepared {len(result.folders)} U-sweep job folder(s) in "
+        f"{Path(args.output_dir)}"
+    )
+    if result.scheduler_path:
+        print(f"Scheduler script: {result.scheduler_path}")
     return 0
 
 

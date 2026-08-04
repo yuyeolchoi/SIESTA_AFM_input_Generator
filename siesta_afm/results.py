@@ -3,12 +3,25 @@
 from __future__ import annotations
 
 import csv
+from dataclasses import dataclass
+import math
 import re
 import shutil
 from pathlib import Path
 
 from .fdf_writer import patch_fdf_text
-from .io import parse_dm_init_spin
+from .io import parse_dm_init_spin, read_structure
+
+
+@dataclass(frozen=True, slots=True)
+class BandGapResult:
+    """A gap estimated from the SCF k-point eigenvalues in a SIESTA EIG file."""
+
+    gap_ev: float
+    kind: str
+    vbm_ev: float
+    cbm_ev: float
+    fermi_ev: float
 
 
 def prepare_array(
@@ -94,6 +107,165 @@ def _find_output(folder: Path) -> Path | None:
         if candidates
         else None
     )
+
+
+def _find_eig(folder: Path) -> Path | None:
+    candidates = [
+        path
+        for path in folder.iterdir()
+        if path.is_file() and path.suffix.lower() == ".eig"
+    ]
+    return max(candidates, key=lambda path: path.stat().st_mtime_ns) if candidates else None
+
+
+def parse_eig_band_gap(
+    text_or_path: str | Path, *, fermi_tolerance: float = 1e-8
+) -> BandGapResult:
+    """Estimate the sampled fundamental gap from a standard SIESTA EIG file.
+
+    The EIG format stores the Fermi level, ``nbands nspin nkpoints``, and one
+    indexed eigenvalue record per k point.  This estimate is limited to the SCF
+    sampling mesh; a publication-quality direct/indirect gap still requires an
+    adequately converged mesh or a dedicated band path.
+    """
+
+    if not math.isfinite(fermi_tolerance) or fermi_tolerance < 0:
+        raise ValueError("Fermi tolerance must be finite and nonnegative")
+    if isinstance(text_or_path, Path):
+        text = text_or_path.read_text(encoding="utf-8", errors="replace")
+    else:
+        possible_path = Path(text_or_path)
+        try:
+            is_file = "\n" not in text_or_path and possible_path.is_file()
+        except OSError:
+            is_file = False
+        if is_file:
+            text = possible_path.read_text(encoding="utf-8", errors="replace")
+        else:
+            text = text_or_path
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) < 3:
+        raise ValueError("truncated SIESTA EIG file")
+    try:
+        fermi = float(lines[0].split()[0].replace("D", "E").replace("d", "e"))
+        dimensions = [int(value) for value in lines[1].split()[:3]]
+    except (ValueError, IndexError) as exc:
+        raise ValueError("invalid SIESTA EIG header") from exc
+    if len(dimensions) != 3:
+        raise ValueError("SIESTA EIG header requires nbands nspin nkpoints")
+    n_bands, n_spin, n_kpoints = dimensions
+    if n_bands < 1 or n_spin not in {1, 2} or n_kpoints < 1:
+        raise ValueError("invalid SIESTA EIG dimensions")
+    if not math.isfinite(fermi):
+        raise ValueError("nonfinite Fermi level in SIESTA EIG file")
+
+    tokens = " ".join(lines[2:]).split()
+    per_kpoint = n_bands * n_spin
+    expected = n_kpoints * (per_kpoint + 1)
+    if len(tokens) != expected:
+        raise ValueError(
+            f"SIESTA EIG data has {len(tokens)} tokens; expected {expected}"
+        )
+    entries: list[tuple[int, int, int, float]] = []
+    offset = 0
+    for expected_index in range(1, n_kpoints + 1):
+        try:
+            index = int(tokens[offset])
+        except ValueError as exc:
+            raise ValueError("invalid SIESTA EIG k-point index") from exc
+        if index != expected_index:
+            raise ValueError(
+                f"unexpected SIESTA EIG k-point index {index}; expected {expected_index}"
+            )
+        offset += 1
+        for spin in range(n_spin):
+            for band in range(n_bands):
+                try:
+                    energy = float(
+                        tokens[offset].replace("D", "E").replace("d", "e")
+                    )
+                except ValueError as exc:
+                    raise ValueError("invalid eigenvalue in SIESTA EIG file") from exc
+                if not math.isfinite(energy):
+                    raise ValueError("nonfinite eigenvalue in SIESTA EIG file")
+                entries.append((index, spin, band, energy))
+                offset += 1
+
+    bands = {
+        (spin, band): [
+            energy
+            for _, entry_spin, entry_band, energy in entries
+            if entry_spin == spin and entry_band == band
+        ]
+        for spin in range(n_spin)
+        for band in range(n_bands)
+    }
+    touches_fermi = any(
+        abs(energy - fermi) <= fermi_tolerance
+        for _, _, _, energy in entries
+    )
+    crosses_fermi = any(
+        min(energies) < fermi - fermi_tolerance
+        and max(energies) > fermi + fermi_tolerance
+        for energies in bands.values()
+    )
+    if touches_fermi or crosses_fermi:
+        return BandGapResult(0.0, "metallic", fermi, fermi, fermi)
+    occupied = [entry for entry in entries if entry[3] < fermi]
+    empty = [entry for entry in entries if entry[3] > fermi]
+    if not occupied or not empty:
+        raise ValueError("SIESTA EIG spectrum does not bracket the Fermi level")
+    vbm = max(entry[3] for entry in occupied)
+    cbm = min(entry[3] for entry in empty)
+    gap = max(0.0, cbm - vbm)
+    vbm_k = {
+        index for index, _, _, energy in occupied if abs(energy - vbm) <= 1e-10
+    }
+    cbm_k = {
+        index for index, _, _, energy in empty if abs(energy - cbm) <= 1e-10
+    }
+    kind = "direct" if vbm_k & cbm_k else "indirect"
+    return BandGapResult(gap, kind, vbm, cbm, fermi)
+
+
+def _u_sweep_metadata(root: Path) -> dict[str, dict[str, str]]:
+    manifest = root / "u_sweep_manifest.csv"
+    if not manifest.is_file():
+        return {}
+    with manifest.open(newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        required = {"folder", "config_id", "u_eff_ev", "element"}
+        missing = required - set(reader.fieldnames or ())
+        if missing:
+            raise ValueError(
+                "U-sweep manifest is missing required column(s): "
+                + ", ".join(sorted(missing))
+            )
+        rows = [dict(row) for row in reader]
+    metadata: dict[str, dict[str, str]] = {}
+    for row in rows:
+        folder = row["folder"].strip()
+        if not folder:
+            raise ValueError("U-sweep manifest contains an empty folder")
+        if folder in metadata:
+            raise ValueError(f"duplicate U-sweep manifest folder: {folder}")
+        metadata[folder] = row
+    return metadata
+
+
+def _read_exit_code(folder: Path) -> tuple[int | None, bool]:
+    """Return a scheduler wrapper exit code and whether its file is invalid."""
+
+    path = folder / "exit_code"
+    if not path.is_file():
+        return None, False
+    try:
+        fields = path.read_text(encoding="utf-8-sig").split()
+        if len(fields) != 1:
+            raise ValueError
+        return int(fields[0]), False
+    except (OSError, ValueError):
+        return None, True
 
 
 def _float_token(value: str) -> float:
@@ -227,26 +399,61 @@ def collect_results(
         ]
     else:
         folders = sorted(path for path in root.iterdir() if path.is_dir())
+    sweep_metadata = _u_sweep_metadata(root)
     results: list[dict[str, object]] = []
-    for folder in folders:
+    failed_indices: list[int] = []
+    failed_folders: list[str] = []
+    for array_index, folder in enumerate(folders, start=1):
+        metadata = sweep_metadata.get(folder.name, {})
+        if sweep_metadata and not metadata:
+            raise ValueError(
+                f"jobs folder is missing from U-sweep manifest: {folder.name}"
+            )
+        config_id = metadata.get("config_id", folder.name.split("_", 1)[0])
+        shared = {
+            "config_id": config_id,
+            "u_eff_ev": metadata.get("u_eff_ev", ""),
+            "element": metadata.get("element", ""),
+            "species_labels": metadata.get("species_labels", ""),
+        }
         initial_path = folder / "input.fdf"
         initial_rows = (
             parse_dm_init_spin(initial_path) if initial_path.is_file() else []
         )
         initial = {index: spin for index, spin in initial_rows}
+        exit_code, invalid_exit_code = _read_exit_code(folder)
+        if exit_code is not None and exit_code != 0:
+            failed_indices.append(array_index)
+            failed_folders.append(folder.name)
         output = _find_output(folder)
         if output is None:
             results.append(
                 {
-                    "config_id": folder.name.split("_", 1)[0],
+                    **shared,
                     "total_energy": "",
+                    "band_gap_ev": "",
+                    "band_gap_type": "",
+                    "band_gap_source": "",
+                    "band_gap_status": "missing-eig",
+                    "band_gap_error": "",
                     "final_net_spin": "",
+                    "local_spins": "",
+                    "local_spin_mean_abs": "",
+                    "local_spin_min_abs": "",
+                    "local_spin_max_abs": "",
                     "sign_retention": "",
                     "collapsed_atoms": "",
                     "spin_population_source": "",
+                    "exit_code": exit_code if exit_code is not None else "",
                     "scf_converged": False,
                     "geometry_converged": False,
-                    "status": "missing-output",
+                    "status": (
+                        "invalid-exit-code"
+                        if invalid_exit_code
+                        else "run-failed"
+                        if exit_code not in {None, 0}
+                        else "missing-output"
+                    ),
                 }
             )
             continue
@@ -271,6 +478,26 @@ def collect_results(
             if local
             else None
         )
+        if metadata.get("element") and initial_path.is_file():
+            try:
+                structure = read_structure(initial_path)
+                target_indices = [
+                    index + 1
+                    for index, symbol in enumerate(structure.symbols)
+                    if symbol.lower() == metadata["element"].lower()
+                ]
+            except (OSError, ValueError):
+                target_indices = [
+                    index for index, value in initial.items() if value != 0
+                ]
+        else:
+            target_indices = [
+                index for index, value in initial.items() if value != 0
+            ]
+        target_local = {
+            index: local[index] for index in target_indices if index in local
+        }
+        target_absolute = [abs(value) for value in target_local.values()]
         lower = text.lower()
         scf = any(
             marker in lower
@@ -298,14 +525,46 @@ def collect_results(
             status = "spin-table-partial"
         else:
             status = "ok" if scf else "not-converged"
+        if invalid_exit_code:
+            status = "invalid-exit-code"
+        elif exit_code not in {None, 0}:
+            status = "run-failed"
+        eig_path = _find_eig(folder)
+        band_gap: BandGapResult | None = None
+        band_gap_status = "missing-eig"
+        band_gap_error = ""
+        if eig_path is not None:
+            try:
+                band_gap = parse_eig_band_gap(eig_path)
+                band_gap_status = "ok"
+            except ValueError as exc:
+                band_gap_status = "parse-error"
+                band_gap_error = str(exc)
         results.append(
             {
-                "config_id": folder.name.split("_", 1)[0],
+                **shared,
                 "total_energy": _last_float(_ENERGY_PATTERNS, text),
+                "band_gap_ev": band_gap.gap_ev if band_gap else "",
+                "band_gap_type": band_gap.kind if band_gap else "",
+                "band_gap_source": eig_path.name if eig_path else "",
+                "band_gap_status": band_gap_status,
+                "band_gap_error": band_gap_error,
                 "final_net_spin": _last_float(_NET_SPIN_PATTERNS, text),
+                "local_spins": " ".join(
+                    f"{index}:{value:.12g}"
+                    for index, value in target_local.items()
+                ),
+                "local_spin_mean_abs": (
+                    sum(target_absolute) / len(target_absolute)
+                    if target_absolute
+                    else ""
+                ),
+                "local_spin_min_abs": min(target_absolute) if target_absolute else "",
+                "local_spin_max_abs": max(target_absolute) if target_absolute else "",
                 "sign_retention": retained,
                 "collapsed_atoms": collapsed,
                 "spin_population_source": spin_source or "",
+                "exit_code": exit_code if exit_code is not None else "",
                 "scf_converged": scf,
                 "geometry_converged": geometry,
                 "status": status,
@@ -315,11 +574,24 @@ def collect_results(
     destination.parent.mkdir(parents=True, exist_ok=True)
     fields = [
         "config_id",
+        "u_eff_ev",
+        "element",
+        "species_labels",
         "total_energy",
+        "band_gap_ev",
+        "band_gap_type",
+        "band_gap_source",
+        "band_gap_status",
+        "band_gap_error",
         "final_net_spin",
+        "local_spins",
+        "local_spin_mean_abs",
+        "local_spin_min_abs",
+        "local_spin_max_abs",
         "sign_retention",
         "collapsed_atoms",
         "spin_population_source",
+        "exit_code",
         "scf_converged",
         "geometry_converged",
         "status",
@@ -328,4 +600,15 @@ def collect_results(
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         writer.writerows(results)
+    if sweep_metadata:
+        (root / "failed_array_indices.txt").write_text(
+            ",".join(str(index) for index in failed_indices) + (
+                "\n" if failed_indices else ""
+            ),
+            encoding="utf-8",
+        )
+        (root / "failed_folders.list").write_text(
+            "\n".join(failed_folders) + ("\n" if failed_folders else ""),
+            encoding="utf-8",
+        )
     return results
