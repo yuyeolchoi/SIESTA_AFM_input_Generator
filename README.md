@@ -136,6 +136,10 @@ and [Materials Project U-value methodology](https://docs.materialsproject.org/me
   excluded from candidate enumeration.
 - `by-species`: splits distinct-element sublattices with `--up-species` and `--down-species`.
 - `by-coordination`: splits Td/Oh sublattices by each magnetic atom's first anion-shell coordination number.
+- `coordination-bipartite`: selects one ligand-CN class, bipartitions only those
+  active magnetic sites, and assigns zero to an inactive CN class. This is the
+  structure-aware normal-Co3O4 path; its CLI/GUI output automatically preserves
+  inactive sites as explicit zero rows.
 - `random`: produces reproducible random initial signs with `--seed`. This is not a physical magnetic-ordering model.
 
 `layer` alternates the combined coordinate stack when multiple magnetic elements
@@ -186,8 +190,10 @@ siesta-afm generate spinel.cif \
 
 siesta-afm generate examples/Co3O4_spinel_COD1538531.cif \
   --magnetic-species Co \
-  --method by-coordination \
-  --moment Co@4=3.0 Co@6=0.5
+  --method coordination-bipartite \
+  --anion-species O \
+  --active-coordination 4 --inactive-coordination 6 \
+  --moment Co@4=3.02 Co@6=0
 
 siesta-afm generate inverse_spinel.cif \
   --magnetic-species Ni Co \
@@ -256,6 +262,40 @@ treat those groups separately.
 The Co₃O₄ example uses the public-domain structure data from [COD 1538531](https://www.crystallography.net/cod/1538531.html) (Roth, 1964). Its Co coordination distribution is 8 atoms with Td CN=4 and 16 atoms with Oh CN=6.
 
 The propagation-vector `q` is in fractional coordinates of the input cell. In a supercell, `q` must be scaled down to represent the same physical periodicity. The A/C/G presets are selected with `--afm-type A`, `C`, `G` respectively and cannot be combined with a user `--q-vector`. Layers not parallel to an axis, such as NiO's (111) AFM-II, are generated with `--method layer --layer-direction 1 1 1`.
+
+## Literature-backed AFM model catalog
+
+`afm-models` exposes a curated catalog for rocksalt AFM-II, CuO AF1,
+perovskite A/C/G, normal-Co3O4 A-site AFM, collinear and canted spinel
+candidates, and corundum Cr2O3. Every entry contains an implementation status,
+an actionable CLI strategy, scientific caveats, and primary-source DOI links.
+
+```bash
+# List the catalog and inspect one entry
+siesta-afm afm-models
+siesta-afm afm-models --model cuo-af1
+
+# Screen composition plus oxygen coordination without generating spins
+siesta-afm afm-models examples/Co3O4_spinel_COD1538531.cif \
+  --magnetic-species Co
+
+# Machine-readable report (omit PATH to print JSON to stdout)
+siesta-afm afm-models structure.fdf --magnetic-species Fe --json models.json
+```
+
+The screening result is deliberately a set of **candidate initial states**, not
+a ground-state prediction. Formula and coordination cannot determine oxidation
+or spin states, exchange constants, canting, magnetic domains, basis phases, or
+the required magnetic supercell. CuO AF1 therefore stays on `manual-spins`, and
+Yafet-Kittel spinels remain exploratory unless atom-resolved angles come from a
+specific reference. The catalog is grounded in primary studies including
+[Roth's rocksalt monoxide structures](https://doi.org/10.1103/PhysRev.110.1333),
+[CuO AF1/AF2 diffraction](https://doi.org/10.1038/ncomms10295),
+[normal-Co3O4 A-site order](https://doi.org/10.1016/0022-3697(64)90156-8), and
+[Yafet-Kittel ferrite arrangements](https://doi.org/10.1103/PhysRev.87.290).
+The desktop GUI exposes `coordination-bipartite` in its Method dropdown and
+automatically writes the inactive zero-spin sites; catalog screening itself is
+currently the auditable CLI command shown above.
 
 A YAML configuration is read with `--moment-config moments.yaml`.
 
@@ -467,7 +507,8 @@ ambiguous input.
 `--reference-spin` may point to either a complete validated FDF or a spin
 fragment. If the top-level U=6 base already contains the validated
 `DM.InitSpin`, pass that same FDF as both `base_input` and `--reference-spin`;
-if the block lives in an include, pass the include file itself.
+this also works when the block lives in a recursively included or redirected
+file because both inputs are expanded before validation.
 
 Run one U=6 eV pilot on the target KISTI system before submitting the full
 array. After confirming that its SIESTA build, pseudopotential hashes,
@@ -490,10 +531,13 @@ siesta-afm prepare-u-sweep CuO_U6_validated.fdf \
 
 Each `U_X.Y` directory contains `input.fdf`, `RUN.fdf`, and every repeated
 `--copy-file`. Copy support is intentionally basename-only; make the base input
-self-contained or pass every top-level include and pseudopotential without
-colliding names. `u_sweep_manifest.csv` records the U value, patched species,
-input/reference/support-file hashes, package version, Git commit, and dirty-tree
-flag. `folders.list` is the
+resolvable at preparation time and pass runtime assets such as pseudopotentials
+without colliding names. Split FDF dependencies are flattened into each generated
+`input.fdf`; they do not need to be copied into the job folders.
+`u_sweep_manifest.csv` records root-file hashes, effective flattened-input hashes,
+the ordered dependency file lists and per-file hashes, the U value, patched
+species, support-file hashes, package version, Git commit, and dirty-tree flag.
+`folders.list` is the
 single source of truth for the PBS/SLURM array index. `--species-label CuA CuB`
 can restrict which Cu-labelled projectors are patched when that is scientifically
 intentional.
@@ -648,11 +692,32 @@ bar; the similarly named Export action remains available as a secondary entry po
 
 ## Input and index preservation
 
-ASE reads CIF, XYZ, and POSCAR/CONTCAR. XV has a dedicated parser used when ASE fails. The FDF parser handles the following blocks and recursive `%include`.
+ASE reads CIF, XYZ, and POSCAR/CONTCAR. XV has a dedicated parser used when ASE
+fails. The FDF reader preserves atom order while recursively resolving all three
+libfdf composition forms:
+
+- `%include defaults.fdf`
+- `Label1 Label2 < values.fdf` (one or more scalar or block labels)
+- `%block Label < block-body.dat` (optional trailing `%dump`)
+
+Quoted paths, paths relative to the file that contains the directive, and nested
+dependencies are supported. Include/redirection cycles are rejected with the
+full dependency chain. This follows the official
+[SIESTA FDF-file syntax](https://docs.siesta-project.org/projects/siesta/en/latest/reference/fdf-file.html).
+
+The structure parser then reads these blocks from the effective input:
 
 - `ChemicalSpeciesLabel`
 - `AtomicCoordinatesAndAtomicSpecies`
 - `LatticeVectors`
+
+`generate --patch-input`, `patch`, GUI patched export, `prepare-array`, and
+`prepare-u-sweep` edit the **effective** FDF. If the input is split, the output is
+a standalone flattened FDF. Referenced source files are never modified; with
+`--in-place`, only the root file is replaced, and `--backup` backs up that root.
+Flattening is intentional because libfdf uses the first definition of a label:
+appending a replacement only to the root could otherwise leave an earlier
+included `Spin` or `DM.InitSpin` active.
 
 No input is ever sorted by element or by coordinate. The internal `ase_index` is the zero-based original order, and `siesta_index` is the one-based index in that same order.
 
@@ -674,4 +739,7 @@ The small structures in `examples/` are for confirming CLI behavior and do not s
 python -m pytest
 ```
 
-The tests cover FDF/include/patch, 1D / square / triangle / disconnected graphs, slab PBC, layer clustering, ordering, the one-based writer, and validation error detection.
+The tests cover FDF include/label/block redirection and flattened patching,
+literature-model screening, coordination-active spinel ordering, 1D / square /
+triangle / disconnected graphs, slab PBC, layer clustering, ordering, the
+one-based writer, and validation error detection.

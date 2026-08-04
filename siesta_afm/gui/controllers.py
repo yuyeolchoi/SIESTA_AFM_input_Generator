@@ -6,11 +6,11 @@ import csv
 from dataclasses import dataclass
 from math import isfinite
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Mapping, Sequence
 
 from ..fdf_writer import patch_fdf_text, render_dm_init_spin
 from ..input_template import InputTemplateResult, render_complete_input
-from ..io import parse_dm_init_spin, read_structure
+from ..io import parse_dm_init_spin, read_fdf_with_includes, read_structure
 from ..magnetic_sites import (
     DEFAULT_ELEMENT_MOMENTS,
     select_magnetic_sites,
@@ -22,11 +22,9 @@ from ..structure import Structure
 from ..validation import (
     ValidationReport,
     analyze_structure,
-    format_analysis,
-    format_validation,
     validate_spins,
 )
-from ..visualize import create_spin_figure, plot_spin_pattern
+from ..visualize import plot_spin_pattern
 from ..workflows import (
     ENUMERATION_METHODS,
     EnumerationResult,
@@ -37,6 +35,7 @@ from ..workflows import (
 
 
 _GUI_INSTALL_HINT = 'python -m pip install -e ".[gui]"'
+_COORDINATION_METHODS = {"by-coordination", "coordination-bipartite"}
 _METHODS = [
     "layer",
     "neighbor-bipartite",
@@ -47,6 +46,7 @@ _METHODS = [
     "propagation-vector",
     "by-species",
     "by-coordination",
+    "coordination-bipartite",
     "manual-spins",
 ]
 _BATCH_METHODS = list(ENUMERATION_METHODS)
@@ -110,6 +110,8 @@ class GenerationParams:
     anion_cutoff: str | float = "auto"
     up_coordination: tuple[int, ...] = (6,)
     down_coordination: tuple[int, ...] = (4,)
+    active_coordination: tuple[int, ...] = (4,)
+    inactive_coordination: tuple[int, ...] = (6,)
     coordination_tolerance: int = 0
     coordination_labels: tuple[tuple[str, int, str], ...] = ()
     max_colors: int = 4
@@ -362,7 +364,7 @@ def toggle_magnetization_use(
 
     row = rows[row_index]
     new_value = not row.use
-    if method == "by-coordination" and row.coordination is not None:
+    if method in _COORDINATION_METHODS and row.coordination is not None:
         row.use = new_value
         return row
     for candidate in rows:
@@ -386,7 +388,9 @@ def moment_text_from_rows(
         value = row.value.strip()
         if not row.use or not value:
             continue
-        coordination = row.coordination if method == "by-coordination" else None
+        coordination = (
+            row.coordination if method in _COORDINATION_METHODS else None
+        )
         key = (row.element.lower(), coordination)
         if key in seen:
             continue
@@ -435,12 +439,12 @@ def batch_moment_text_from_rows(
     ]
 
     element_moments = moment_text_from_rows(baseline_rows, "layer")
-    if "by-coordination" not in methods:
+    if not _COORDINATION_METHODS.intersection(methods):
         return element_moments
     coordination_moments = moment_text_from_rows(
         baseline_rows, "by-coordination"
     )
-    if all(method == "by-coordination" for method in methods):
+    if all(method in _COORDINATION_METHODS for method in methods):
         return coordination_moments
     if not coordination_moments or coordination_moments == element_moments:
         return element_moments
@@ -505,6 +509,8 @@ def workflow_kwargs_from_inputs(
     anion_cutoff: str = "auto",
     up_coordination: str = "6",
     down_coordination: str = "4",
+    active_coordination: str = "4",
+    inactive_coordination: str = "6",
     coordination_tolerance: str | int = 0,
     max_colors: str | int = 4,
     color_spins: str = "",
@@ -532,7 +538,7 @@ def workflow_kwargs_from_inputs(
             selected_afm_type = afm_type
 
     up_species, down_species = species_roles_from_rows(magnetization_rows)
-    if "by-coordination" in selected_methods:
+    if _COORDINATION_METHODS.intersection(selected_methods):
         parsed_up_coordination = tuple(
             int(value) for value in _split_words(up_coordination)
         )
@@ -540,10 +546,18 @@ def workflow_kwargs_from_inputs(
             int(value) for value in _split_words(down_coordination)
         )
         parsed_coordination_tolerance = int(coordination_tolerance)
+        parsed_active_coordination = tuple(
+            int(value) for value in _split_words(active_coordination)
+        )
+        parsed_inactive_coordination = tuple(
+            int(value) for value in _split_words(inactive_coordination)
+        )
     else:
         parsed_up_coordination = (6,)
         parsed_down_coordination = (4,)
         parsed_coordination_tolerance = 0
+        parsed_active_coordination = (4,)
+        parsed_inactive_coordination = (6,)
 
     if "graph-coloring" in selected_methods:
         parsed_max_colors = int(max_colors)
@@ -572,6 +586,8 @@ def workflow_kwargs_from_inputs(
         "anion_cutoff": anion_cutoff.strip() or "auto",
         "up_coordination": parsed_up_coordination,
         "down_coordination": parsed_down_coordination,
+        "active_coordination": parsed_active_coordination,
+        "inactive_coordination": parsed_inactive_coordination,
         "coordination_tolerance": parsed_coordination_tolerance,
         "max_colors": parsed_max_colors,
         "color_spins": parsed_color_spins,
@@ -647,7 +663,7 @@ def magnetization_rows_from_structure(
         if row.coordination is not None and row.label not in {"", "-"}:
             labels_by_site[(normalized, row.coordination)] = row.label
 
-    if method != "by-coordination":
+    if method not in _COORDINATION_METHODS:
         used_order = [
             element for element in counts if use_by_element.get(element.lower(), False)
         ]
@@ -777,7 +793,7 @@ def safe_magnetization_rows_from_structure(
             None,
         )
     except ValueError as exc:
-        if method != "by-coordination":
+        if method not in _COORDINATION_METHODS:
             raise
         rows = magnetization_rows_from_structure(
             structure,
@@ -839,11 +855,11 @@ def detect_coordination_combinations(
 def coordination_numbers_from_result(
     result: GenerationResult | SpinFileResult,
 ) -> dict[int, int]:
-    """Return stored per-atom CN values for a by-coordination result."""
+    """Return stored per-atom CN values for a coordination-method result."""
 
     if (
         not isinstance(result, GenerationResult)
-        or result.assignment.method != "by-coordination"
+        or result.assignment.method not in _COORDINATION_METHODS
     ):
         return {}
     values = result.assignment.metadata.get("coordination_numbers")
@@ -941,6 +957,8 @@ def run_generation(params: GenerationParams) -> GenerationResult:
         anion_cutoff=params.anion_cutoff,
         up_coordination=params.up_coordination,
         down_coordination=params.down_coordination,
+        active_coordination=params.active_coordination,
+        inactive_coordination=params.inactive_coordination,
         coordination_tolerance=params.coordination_tolerance,
         max_colors=params.max_colors,
         color_spins=params.color_spins,
@@ -1255,7 +1273,7 @@ def export_patched_input(
     output = Path(destination)
     if output.resolve() == source.resolve():
         raise ValueError("patched export must not overwrite the base input file")
-    patched = patch_fdf_text(source.read_text(encoding="utf-8-sig"), block)
+    patched = patch_fdf_text(read_fdf_with_includes(source), block)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(patched, encoding="utf-8")
     return output

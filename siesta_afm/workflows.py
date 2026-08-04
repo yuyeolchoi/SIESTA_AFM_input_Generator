@@ -24,6 +24,7 @@ from .ordering import (
     alternating_index,
     by_species_ordering,
     checkerboard_ordering,
+    coordination_bipartite_ordering,
     coordination_ordering,
     direction_layer_ordering,
     graph_coloring_ordering,
@@ -51,6 +52,7 @@ ENUMERATION_METHODS = (
     "manual-groups",
     "by-species",
     "by-coordination",
+    "coordination-bipartite",
     "frustrated",
 )
 
@@ -99,6 +101,8 @@ def generate_assignment(
     anion_cutoff: str | float | None = "auto",
     up_coordination: Sequence[int] = (6,),
     down_coordination: Sequence[int] = (4,),
+    active_coordination: Sequence[int] = (4,),
+    inactive_coordination: Sequence[int] = (6,),
     coordination_tolerance: int = 0,
     max_colors: int = 4,
     color_spins: str | Sequence[int] | None = None,
@@ -184,6 +188,18 @@ def generate_assignment(
             up_coordination=up_coordination,
             down_coordination=down_coordination,
             coordination_tolerance=coordination_tolerance,
+        )
+    elif method == "coordination-bipartite":
+        assignment = coordination_bipartite_ordering(
+            structure,
+            indices,
+            anion_species=anion_species,
+            anion_cutoff=anion_cutoff,
+            active_coordination=active_coordination,
+            inactive_coordination=inactive_coordination,
+            coordination_tolerance=coordination_tolerance,
+            cutoff=cutoff,
+            neighbor_shell=neighbor_shell,
         )
     elif method == "layer":
         if layer_direction is not None:
@@ -301,13 +317,14 @@ def generate_assignment(
         return indices, assignment, {
             int(index): float(value) for index, value in direct_spins.items()
         }
+    coordination_methods = {"by-coordination", "coordination-bipartite"}
     coordinations = (
         assignment.metadata.get("coordination_numbers")
-        if method == "by-coordination"
+        if method in coordination_methods
         else None
     )
     if resolved_magnitudes is None:
-        if method == "by-coordination" and isinstance(coordinations, dict):
+        if method in coordination_methods and isinstance(coordinations, dict):
             resolved_magnitudes, resolved_moment_sources = resolve_moments_with_sources(
                 structure,
                 indices,
@@ -461,7 +478,10 @@ def apply_coordination_labels(
 ) -> None:
     """Apply user-edited coordination labels to assignment metadata in place."""
 
-    if assignment.method != "by-coordination" or not coordination_labels:
+    if (
+        assignment.method not in {"by-coordination", "coordination-bipartite"}
+        or not coordination_labels
+    ):
         return
     coordinations = assignment.metadata.get("coordination_numbers")
     if not isinstance(coordinations, dict):
@@ -584,10 +604,16 @@ def enumerate_candidates(
         )
         if key in seen:
             continue
+        score_indices = indices
+        active_indices = assignment.metadata.get("active_indices")
+        if assignment.method == "coordination-bipartite" and isinstance(
+            active_indices, list
+        ):
+            score_indices = active_indices
         try:
             graph, _, _ = build_neighbor_graph(
                 structure,
-                indices,
+                score_indices,
                 workflow_kwargs.get("cutoff", "auto"),
                 neighbor_shell=workflow_kwargs.get("neighbor_shell", 1),
             )
@@ -869,10 +895,16 @@ def _enumerate_candidates_with_moment_sweep(
             )
             if key in seen:
                 continue
+            score_indices = indices
+            active_indices = assignment.metadata.get("active_indices")
+            if assignment.method == "coordination-bipartite" and isinstance(
+                active_indices, list
+            ):
+                score_indices = active_indices
             try:
                 graph, _, _ = build_neighbor_graph(
                     structure,
-                    indices,
+                    score_indices,
                     workflow_kwargs.get("cutoff", "auto"),
                     neighbor_shell=workflow_kwargs.get("neighbor_shell", 1),
                 )

@@ -7,11 +7,12 @@ from ase.units import Bohr
 
 import siesta_afm.io as io_module
 from siesta_afm.cli import main
-from siesta_afm.fdf_writer import patch_fdf_text
+from siesta_afm.fdf_writer import patch_fdf_file, patch_fdf_text
 from siesta_afm.io import (
     parse_dm_init_spin,
     parse_fdf_structure,
     parse_xv_structure,
+    read_fdf_document,
     read_structure,
 )
 
@@ -128,6 +129,165 @@ def test_fdf_include_recursion(tmp_path: Path) -> None:
     )
     structure = parse_fdf_structure(main)
     assert structure.symbols == ["Cu"]
+
+
+def test_fdf_document_expands_scalar_and_external_block_redirects(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "lattice settings.fdf").write_text(
+        "MeshCutoff 999 Ry\nLatticeConstant 2.0 Ang\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "species.data").write_text("1 29 Cu\n2 8 O\n", encoding="utf-8")
+    (tmp_path / "vectors.data").write_text(
+        "2 0 0\n0 2 0\n0 0 2\n", encoding="utf-8"
+    )
+    (tmp_path / "coordinates data").write_text(
+        "0 0 0 2\n0.5 0.5 0.5 1\n", encoding="utf-8"
+    )
+    root = tmp_path / "split.fdf"
+    root.write_text(
+        'LatticeConstant < "lattice settings.fdf"\n'
+        "%block ChemicalSpeciesLabel < species.data %dump  # external body\n"
+        "%block LatticeVectors < vectors.data\n"
+        "AtomicCoordinatesFormat Fractional\n"
+        "%block AtomicCoordinatesAndAtomicSpecies < 'coordinates data'\n",
+        encoding="utf-8",
+    )
+
+    document = read_fdf_document(root)
+    structure = read_structure(root)
+
+    assert document.is_split
+    assert [path.name for path in document.source_files] == [
+        "split.fdf",
+        "lattice settings.fdf",
+        "species.data",
+        "vectors.data",
+        "coordinates data",
+    ]
+    assert "%block ChemicalSpeciesLabel\n1 29 Cu\n2 8 O\n%endblock" in (
+        document.text
+    )
+    assert "MeshCutoff 999 Ry" not in document.text
+    assert structure.symbols == ["O", "Cu"]
+    assert structure.species_ids == [2, 1]
+    assert np.allclose(structure.cell, np.eye(3) * 4.0)
+    assert np.allclose(structure.positions[1], [2.0, 2.0, 2.0])
+
+
+def test_label_redirect_selects_multiple_scalar_and_block_definitions(
+    tmp_path: Path,
+) -> None:
+    values = tmp_path / "values.fdf"
+    values.write_text(
+        "UnusedLabel ignored\n"
+        "Axis.XY Polar\n"
+        "%block AtomicCoordinatesAndAtomicSpecies\n"
+        "0 0 0 1\n"
+        "%endblock AtomicCoordinatesAndAtomicSpecies\n"
+        "Status-XY Enabled\n",
+        encoding="utf-8",
+    )
+    root = tmp_path / "root.fdf"
+    root.write_text(
+        "axisxy status_xy AtomicCoordinatesAndAtomicSpecies < values.fdf\n",
+        encoding="utf-8",
+    )
+
+    document = read_fdf_document(root)
+
+    assert "UnusedLabel" not in document.text
+    assert "Axis.XY Polar" in document.text
+    assert "%block AtomicCoordinatesAndAtomicSpecies" in document.text
+    assert "Status-XY Enabled" in document.text
+    assert document.text.index("Axis.XY") < document.text.index("%block")
+    assert document.text.index("%endblock") < document.text.index("Status-XY")
+
+
+def test_external_block_body_resolves_nested_redirect_from_its_directory(
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    value = data_dir / "value.fdf"
+    value.write_text("DataValue 42\n", encoding="utf-8")
+    body = data_dir / "raw.data"
+    body.write_text("DataValue < value.fdf\n", encoding="utf-8")
+    root = tmp_path / "root.fdf"
+    root.write_text("%block User.Data < data/raw.data\n", encoding="utf-8")
+
+    document = read_fdf_document(root)
+
+    assert "%block User.Data\nDataValue 42\n%endblock User.Data" in document.text
+    assert document.source_files == (
+        root.resolve(),
+        body.resolve(),
+        value.resolve(),
+    )
+
+
+def test_include_aware_patch_flattens_effective_input_without_mutating_sources(
+    tmp_path: Path,
+) -> None:
+    settings = tmp_path / "magnetism.fdf"
+    original_settings = (
+        "Spin non-polarized\n"
+        "%block DM.InitSpin\n1 0.1\n%endblock DM.InitSpin\n"
+    )
+    settings.write_text(original_settings, encoding="utf-8")
+    root = tmp_path / "main.fdf"
+    root.write_text(
+        "SystemName split-input\n%include magnetism.fdf\n",
+        encoding="utf-8",
+    )
+    spin = tmp_path / "spin.fdf"
+    spin.write_text(
+        "%block DM.InitSpin\n2 -0.75\n%endblock DM.InitSpin\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "patched.fdf"
+
+    patch_fdf_file(root, spin, output_path=output)
+
+    patched = output.read_text(encoding="utf-8")
+    assert "%include" not in patched.lower()
+    assert patched.count("Spin polarized") == 1
+    assert patched.lower().count("%block dm.initspin") == 1
+    assert parse_dm_init_spin(output) == [(2, -0.75)]
+    assert settings.read_text(encoding="utf-8") == original_settings
+
+
+def test_generate_patch_input_flattens_split_structure(tmp_path: Path) -> None:
+    body = tmp_path / "structure-and-spin.fdf"
+    original_body = (Path(__file__).parents[1] / "examples" / "input.fdf").read_text(
+        encoding="utf-8"
+    )
+    body.write_text(original_body, encoding="utf-8")
+    root = tmp_path / "root.fdf"
+    root.write_text("%include structure-and-spin.fdf\n", encoding="utf-8")
+    output = tmp_path / "patched.fdf"
+
+    code = main(
+        [
+            "generate",
+            str(root),
+            "--magnetic-species",
+            "Cu",
+            "--method",
+            "layer",
+            "--moment",
+            "0.5",
+            "--patch-input",
+            "--output",
+            str(output),
+        ]
+    )
+
+    assert code == 0
+    assert "%include" not in output.read_text(encoding="utf-8").lower()
+    assert [index for index, _ in parse_dm_init_spin(output)] == [1, 3]
+    assert body.read_text(encoding="utf-8") == original_body
 
 
 def test_recursive_include_is_rejected(tmp_path: Path) -> None:

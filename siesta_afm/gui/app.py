@@ -21,6 +21,7 @@ from .controllers import (
     _BATCH_METHODS,
     _CANDIDATE_COLUMNS,
     _COLOR_MODES,
+    _COORDINATION_METHODS,
     _GUI_INSTALL_HINT,
     _LEFT_PANEL_MIN_WIDTH,
     _MANUAL_SPINS_MAX_ATOMS,
@@ -274,6 +275,8 @@ class DesktopApp:
         self.anion_cutoff_var = tk.StringVar(value="auto")
         self.up_coordination_var = tk.StringVar(value="6")
         self.down_coordination_var = tk.StringVar(value="4")
+        self.active_coordination_var = tk.StringVar(value="4")
+        self.inactive_coordination_var = tk.StringVar(value="6")
         self.coordination_tolerance_var = tk.StringVar(value="0")
         self.max_colors_var = tk.StringVar(value="4")
         self.color_spins_var = tk.StringVar(value="")
@@ -386,9 +389,9 @@ class DesktopApp:
             text=(
                 "Double-click use, label, value, or role to edit (row must be "
                 "checked). Label edits apply only when Method is "
-                "by-coordination; role edits only when Method is by-species. "
+                "a coordination method; role edits only when Method is by-species. "
                 "CN and count are computed from the structure and read-only. "
-                "In by-coordination mode, unchecking one coordination site "
+                "In coordination mode, unchecking one coordination site "
                 "keeps the element selected; set moment 0 or use "
                 "--exclude-atoms to fully exclude those atoms."
             ),
@@ -532,6 +535,25 @@ class DesktopApp:
         option_row = self._entry_row(
             coordination_frame,
             option_row,
+            "Active CN",
+            self.active_coordination_var,
+        )
+        option_row = self._entry_row(
+            coordination_frame,
+            option_row,
+            "Inactive CN",
+            self.inactive_coordination_var,
+        )
+        self._help_row(
+            coordination_frame,
+            option_row,
+            "Up/Down apply to by-coordination; Active/Inactive apply to "
+            "coordination-bipartite.",
+        )
+        option_row += 1
+        option_row = self._entry_row(
+            coordination_frame,
+            option_row,
             "CN tolerance",
             self.coordination_tolerance_var,
         )
@@ -544,6 +566,7 @@ class DesktopApp:
             row=option_row, column=0, columnspan=2, sticky="w", pady=3
         )
         self.method_option_frames["by-coordination"] = coordination_frame
+        self.method_option_frames["coordination-bipartite"] = coordination_frame
         row += 1
 
         graph_frame = self._option_frame(panel, row, "Graph-coloring options")
@@ -1418,12 +1441,17 @@ class DesktopApp:
         active: list[str] = []
         if method == "layer":
             active.append("layer")
-        if method in {"neighbor-bipartite", "checkerboard", "graph-coloring"}:
+        if method in {
+            "neighbor-bipartite",
+            "checkerboard",
+            "graph-coloring",
+            "coordination-bipartite",
+        }:
             active.append("neighbor")
         if method == "propagation-vector":
             active.append("propagation-vector")
-        if method == "by-coordination":
-            active.append("by-coordination")
+        if method in _COORDINATION_METHODS:
+            active.append(method)
         if method == "graph-coloring":
             active.append("graph-coloring")
         if method == "random":
@@ -1550,7 +1578,7 @@ class DesktopApp:
         if name == "use":
             method = self.method_var.get()
             toggle_magnetization_use(self.magnetization_rows, row_index, method)
-            if method == "by-coordination" and row.coordination is not None:
+            if method in _COORDINATION_METHODS and row.coordination is not None:
                 indices = ", ".join(str(index) for index in row.atom_indices) or "unknown"
                 self._coordination_use_note = (
                     f"{row.element} CN={row.coordination} use={row.use}; atom "
@@ -1568,9 +1596,9 @@ class DesktopApp:
                 "edited directly."
             )
             return
-        if name == "label" and self.method_var.get() != "by-coordination":
+        if name == "label" and self.method_var.get() not in _COORDINATION_METHODS:
             self.status_var.set(
-                "Label is only editable when Method is set to by-coordination."
+                "Label is only editable when a coordination method is selected."
             )
             return
         if name == "role" and self.method_var.get() != "by-species":
@@ -1729,6 +1757,8 @@ class DesktopApp:
             self.anion_cutoff_var,
             self.up_coordination_var,
             self.down_coordination_var,
+            self.active_coordination_var,
+            self.inactive_coordination_var,
             self.coordination_tolerance_var,
         ):
             variable.trace_add("write", self._coordination_setting_changed)
@@ -1739,8 +1769,9 @@ class DesktopApp:
         if self._table_after_id is not None:
             self.root.after_cancel(self._table_after_id)
             self._table_after_id = None
-        if self.method_var.get() != "by-coordination":
+        if self.method_var.get() not in _COORDINATION_METHODS:
             self._coordination_use_note = None
+        if self.method_var.get() != "by-coordination":
             self.split_species_by_coordination_var.set(False)
         self._reset_spin_coordination_numbers_for_result(None)
         self._show_method_options()
@@ -1751,7 +1782,10 @@ class DesktopApp:
     def _coordination_setting_changed(self, *_: object) -> None:
         if not self._traces_ready:
             return
-        if self.method_var.get() != "by-coordination" or self.current_structure is None:
+        if (
+            self.method_var.get() not in _COORDINATION_METHODS
+            or self.current_structure is None
+        ):
             self._parameter_changed()
             return
         if self.viewing_spin_path is not None:
@@ -1826,7 +1860,7 @@ class DesktopApp:
         self.spin_coordination_checkbuttons.clear()
         self.spin_coordination_widgets.clear()
         self.spin_coordination_numbers.clear()
-        if result is None or self.method_var.get() != "by-coordination":
+        if result is None or self.method_var.get() not in _COORDINATION_METHODS:
             return
         coordinations = coordination_numbers_from_result(result)
         if not coordinations:
@@ -2046,6 +2080,8 @@ class DesktopApp:
             anion_cutoff=self.anion_cutoff_var.get(),
             up_coordination=self.up_coordination_var.get(),
             down_coordination=self.down_coordination_var.get(),
+            active_coordination=self.active_coordination_var.get(),
+            inactive_coordination=self.inactive_coordination_var.get(),
             coordination_tolerance=self.coordination_tolerance_var.get(),
             max_colors=self.max_colors_var.get(),
             color_spins=self.color_spins_var.get(),

@@ -10,7 +10,7 @@ import shutil
 from pathlib import Path
 
 from .fdf_writer import patch_fdf_text
-from .io import parse_dm_init_spin, read_structure
+from .io import parse_dm_init_spin, read_fdf_with_includes, read_structure
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,7 +38,7 @@ def prepare_array(
     if not manifest_path.is_file():
         raise FileNotFoundError(f"configuration manifest not found: {manifest_path}")
     destination.mkdir(parents=True, exist_ok=True)
-    input_text = source.read_text(encoding="utf-8-sig")
+    input_text = read_fdf_with_includes(source)
     folders: list[Path] = []
     with manifest_path.open(newline="", encoding="utf-8-sig") as handle:
         for row in csv.DictReader(handle):

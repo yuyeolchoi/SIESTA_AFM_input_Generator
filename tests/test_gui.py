@@ -88,6 +88,7 @@ def test_gui_exposes_generation_methods_and_propagation_preset() -> None:
         "random",
         "by-species",
         "by-coordination",
+        "coordination-bipartite",
         "graph-coloring",
         "manual-spins",
     }.issubset(gui._METHODS)
@@ -388,6 +389,8 @@ def test_workflow_kwargs_gate_method_specific_inputs_without_tk() -> None:
         "anion_cutoff": "2.8",
         "up_coordination": (6,),
         "down_coordination": (4,),
+        "active_coordination": (4,),
+        "inactive_coordination": (6,),
         "coordination_tolerance": 0,
         "max_colors": 4,
         "color_spins": None,
@@ -401,6 +404,8 @@ def test_workflow_kwargs_gate_method_specific_inputs_without_tk() -> None:
     inputs.update(
         up_coordination="5, 6",
         down_coordination="3 4",
+        active_coordination="4",
+        inactive_coordination="6",
         coordination_tolerance="2",
     )
     coordinated = gui.workflow_kwargs_from_inputs(
@@ -409,6 +414,8 @@ def test_workflow_kwargs_gate_method_specific_inputs_without_tk() -> None:
     assert coordinated["layer_direction"] == (1.0, 2.0, 3.0)
     assert coordinated["up_coordination"] == (5, 6)
     assert coordinated["down_coordination"] == (3, 4)
+    assert coordinated["active_coordination"] == (4,)
+    assert coordinated["inactive_coordination"] == (6,)
     assert coordinated["coordination_tolerance"] == 2
     assert coordinated["q_vector"] is None
     assert coordinated["max_colors"] == 4
@@ -595,6 +602,36 @@ def test_coordination_geometry_reaches_generated_comments_and_can_be_edited() ->
     )
     assert spinel.block.count("# Co  (Td, CN=4)") == 8
     assert spinel.block.count("# Co  (Oh, CN=6)") == 16
+
+
+def test_gui_coordination_bipartite_generates_explicit_co3o4_zero_sites() -> None:
+    path = ROOT / "examples" / "Co3O4_spinel_COD1538531.cif"
+    structure = read_structure(path)
+    rows = gui.magnetization_rows_from_structure(
+        structure, "coordination-bipartite", anion_species=("O",)
+    )
+
+    result = gui.run_generation(
+        gui.GenerationParams(
+            structure_path=path,
+            magnetic_species=("Co",),
+            method="coordination-bipartite",
+            moment="Co@4=3.02 Co@6=0",
+            anion_species=("O",),
+        )
+    )
+
+    assert [(row.element, row.coordination) for row in rows if row.use] == [
+        ("Co", 4),
+        ("Co", 6),
+    ]
+    parsed = dict(parse_dm_init_spin(result.block))
+    assert len(parsed) == 24
+    assert sum(value > 0 for value in parsed.values()) == 4
+    assert sum(value < 0 for value in parsed.values()) == 4
+    assert all(parsed[index] == 0 for index in range(1, 17))
+    assert not set(range(17, 49)).intersection(parsed)
+    assert gui.coordination_numbers_from_result(result)
 
 
 def test_default_gui_layout_keeps_visible_inputs_wide_enough(
@@ -1769,6 +1806,28 @@ def test_export_patched_input_is_idempotent_and_preserves_base(tmp_path: Path) -
     assert parse_dm_init_spin(first) == [(1, 0.7), (3, -0.5)]
     with pytest.raises(ValueError, match="must not overwrite"):
         gui.export_patched_input(base, block, base)
+
+
+def test_export_patched_input_flattens_split_fdf(tmp_path: Path) -> None:
+    dependency = tmp_path / "magnetic-settings.fdf"
+    dependency.write_text(
+        "SystemName split-gui\nSpin non-polarized\n", encoding="utf-8"
+    )
+    base = tmp_path / "root.fdf"
+    base.write_text("%include magnetic-settings.fdf\n", encoding="utf-8")
+    block = render_dm_init_spin(
+        {0: 0.7, 1: -0.7}, method="layer", magnetic_species=["Co"]
+    )
+
+    output = gui.export_patched_input(base, block, tmp_path / "patched.fdf")
+
+    text = output.read_text(encoding="utf-8")
+    assert "%include" not in text.lower()
+    assert "SystemName split-gui" in text
+    assert parse_dm_init_spin(output) == [(1, 0.7), (2, -0.7)]
+    assert dependency.read_text(encoding="utf-8") == (
+        "SystemName split-gui\nSpin non-polarized\n"
+    )
 
 
 @pytest.mark.filterwarnings(

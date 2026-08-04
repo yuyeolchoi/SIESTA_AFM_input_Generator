@@ -16,7 +16,7 @@ from ase.data import atomic_numbers
 
 from . import __version__
 from .fdf_writer import patch_fdf_text
-from .io import parse_dm_init_spin, read_structure
+from .io import parse_dm_init_spin, read_fdf_document, read_structure
 
 
 _FLOAT_RE = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eEdD][-+]?\d+)?"
@@ -250,6 +250,28 @@ def _sha256_bytes(value: bytes) -> str:
 
 def _sha256_file(path: Path) -> str:
     return _sha256_bytes(path.read_bytes())
+
+
+def _source_file_provenance(
+    root: Path, source_files: Sequence[Path]
+) -> tuple[str, str]:
+    """Serialize portable dependency names and byte hashes for an FDF root."""
+
+    names: list[str] = []
+    hashes: dict[str, str] = {}
+    parent = root.resolve().parent
+    for source in source_files:
+        resolved = source.resolve()
+        try:
+            name = resolved.relative_to(parent).as_posix()
+        except ValueError:
+            name = resolved.as_posix()
+        names.append(name)
+        hashes[name] = _sha256_file(resolved)
+    return (
+        json.dumps(names, ensure_ascii=False),
+        json.dumps(hashes, ensure_ascii=False, sort_keys=True),
+    )
 
 
 def _git_provenance() -> tuple[str, str]:
@@ -528,8 +550,15 @@ def prepare_u_sweep(
     if len(set(formatted_values)) != len(formatted_values):
         raise ValueError("U values resolve to duplicate output folder names")
     _validate_reference_spin(source, spin_source, canonical)
-    base_text = source.read_text(encoding="utf-8-sig")
-    spin_text = spin_source.read_text(encoding="utf-8-sig")
+    base_document = read_fdf_document(source)
+    base_text = base_document.text
+    if spin_source.suffix.lower() == ".fdf":
+        spin_document = read_fdf_document(spin_source)
+        spin_text = spin_document.text
+        spin_sources = spin_document.source_files
+    else:
+        spin_text = spin_source.read_text(encoding="utf-8-sig")
+        spin_sources = (spin_source.resolve(),)
     spin_patched = patch_fdf_text(base_text, spin_text)
 
     prepared: list[tuple[str, str, tuple[str, ...], str]] = []
@@ -566,6 +595,14 @@ def prepare_u_sweep(
 
     base_hash = _sha256_file(source)
     spin_hash = _sha256_file(spin_source)
+    base_source_files, base_source_hashes = _source_file_provenance(
+        source, base_document.source_files
+    )
+    spin_source_files, spin_source_hashes = _source_file_provenance(
+        spin_source, spin_sources
+    )
+    base_effective_hash = _sha256_bytes(base_text.encode("utf-8"))
+    spin_effective_hash = _sha256_bytes(spin_text.encode("utf-8"))
     revision, git_dirty = _git_provenance()
     destination.mkdir(parents=True, exist_ok=True)
     folders: list[Path] = []
@@ -591,6 +628,12 @@ def prepare_u_sweep(
                 "input_file": f"{folder_name}/input.fdf",
                 "base_input_sha256": base_hash,
                 "spin_file_sha256": spin_hash,
+                "base_input_effective_sha256": base_effective_hash,
+                "spin_file_effective_sha256": spin_effective_hash,
+                "base_input_source_files": base_source_files,
+                "base_input_source_files_sha256": base_source_hashes,
+                "spin_file_source_files": spin_source_files,
+                "spin_file_source_files_sha256": spin_source_hashes,
                 "input_sha256": _sha256_bytes(patched.encode("utf-8")),
                 "support_files": json.dumps(
                     [name for name, _, _ in prepared_support], ensure_ascii=False

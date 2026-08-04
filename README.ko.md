@@ -81,6 +81,9 @@ siesta-afm patch examples/input.fdf \
   적합하며 사용자 명시 배정이므로 후보 enumeration에서는 제외됩니다.
 - `by-species`: 서로 다른 원소 sublattice를 `--up-species`와 `--down-species`로 나눕니다.
 - `by-coordination`: 자기 원자의 첫 anion shell 배위수로 Td/Oh sublattice를 나눕니다.
+- `coordination-bipartite`: 한 ligand 배위수 계열만 활성 자리로 골라 그 자기 그래프를
+  이분화하고, 비활성 배위수 계열은 0으로 둡니다. 정상 Co₃O₄용 구조 인식 경로이며
+  CLI/GUI 출력은 비활성 자리를 명시적인 0 행으로 자동 보존합니다.
 - `random`: `--seed`로 재현 가능한 무작위 초기 부호를 만듭니다. 물리적 자기질서 모델은 아닙니다.
 
 여러 자기 원소를 함께 선택하면 `layer`는 모든 원소를 합친 좌표 층을 기준으로 부호를
@@ -130,8 +133,10 @@ siesta-afm generate spinel.cif \
 
 siesta-afm generate examples/Co3O4_spinel_COD1538531.cif \
   --magnetic-species Co \
-  --method by-coordination \
-  --moment Co@4=3.0 Co@6=0.5
+  --method coordination-bipartite \
+  --anion-species O \
+  --active-coordination 4 --inactive-coordination 6 \
+  --moment Co@4=3.02 Co@6=0
 
 siesta-afm generate inverse_spinel.cif \
   --magnetic-species Ni Co \
@@ -194,6 +199,38 @@ Co₃O₄ 예제는 [COD 1538531](https://www.crystallography.net/cod/1538531.ht
 Oh CN=6이 16개입니다.
 
 Propagation vector의 q는 입력 cell의 fractional 좌표입니다. supercell에서는 같은 물리적 주기를 나타내도록 q를 축소해야 합니다. A/C/G preset은 각각 `--afm-type A`, `C`, `G`로 선택하며, 사용자 `--q-vector`와 동시에 쓸 수 없습니다. NiO의 (111) AFM-II처럼 축과 평행하지 않은 층은 `--method layer --layer-direction 1 1 1`로 생성합니다.
+
+## 문헌 기반 AFM 모델 카탈로그
+
+`afm-models`는 rocksalt AFM-II, CuO AF1, perovskite A/C/G, 정상 Co₃O₄의
+A-site AFM, collinear/canted spinel 후보, corundum Cr₂O₃ 모델을 제공합니다.
+각 항목에는 구현 상태, 실제 CLI 전략, 과학적 제한, 1차 문헌 DOI가 들어 있습니다.
+
+```bash
+# 전체 목록과 한 모델의 상세 정보
+siesta-afm afm-models
+siesta-afm afm-models --model cuo-af1
+
+# 스핀을 만들지 않고 조성과 산소 배위수로 후보 선별
+siesta-afm afm-models examples/Co3O4_spinel_COD1538531.cif \
+  --magnetic-species Co
+
+# 기계 판독 보고서(PATH를 생략하면 stdout에 JSON 출력)
+siesta-afm afm-models structure.fdf --magnetic-species Fe --json models.json
+```
+
+이 결과는 **초기 상태 후보**이며 바닥상태 예측이 아닙니다. 조성과 배위수만으로는
+산화수·스핀 상태, 교환 상수, canting, magnetic domain, basis phase, 필요한 magnetic
+supercell을 정할 수 없습니다. 따라서 CuO AF1은 `manual-spins`를 유지하고,
+Yafet-Kittel spinel은 특정 문헌의 원자별 각도를 확보하지 않은 한 탐색용으로만
+취급합니다. 카탈로그의 1차 근거에는
+[Roth의 rocksalt 산화물 자기구조](https://doi.org/10.1103/PhysRev.110.1333),
+[CuO AF1/AF2 회절 연구](https://doi.org/10.1038/ncomms10295),
+[정상 Co₃O₄ A-site 질서](https://doi.org/10.1016/0022-3697(64)90156-8),
+[Yafet-Kittel ferrite 배열](https://doi.org/10.1103/PhysRev.87.290)이 포함됩니다.
+데스크톱 GUI의 Method 드롭다운에서도 `coordination-bipartite`를 선택할 수 있고 비활성
+0-spin 자리를 자동으로 기록합니다. 모델 카탈로그 선별은 현재 위의 감사 가능한 CLI
+명령으로 제공합니다.
 
 YAML 설정은 `--moment-config moments.yaml`로 읽습니다.
 
@@ -401,8 +438,8 @@ SIESTA `.EIG`가 있으면 SCF k-mesh에서 표본화한 gap과 direct/indirect 
 
 `--reference-spin`에는 완전한 검증 FDF 또는 spin fragment를 지정할 수 있습니다. U=6
 베이스의 최상위 파일에 검증된 `DM.InitSpin`이 이미 있으면 `base_input`과
-`--reference-spin`에 같은 FDF를 쓰고, block이 include 파일에 있으면 그 include 파일을
-직접 지정합니다.
+`--reference-spin`에 같은 FDF를 씁니다. block이 재귀 include 또는 redirect 파일에
+있어도 검증 전에 두 입력을 모두 펼치므로 root FDF를 그대로 지정할 수 있습니다.
 
 전체 배열을 제출하기 전에 목표 KISTI 시스템에서 U=6 eV 한 건을 pilot으로 실행하십시오.
 SIESTA build, pseudopotential hash, 수렴, Cu local moment, AFM 부호 유지와 gap이 검증된
@@ -423,10 +460,12 @@ siesta-afm prepare-u-sweep CuO_U6_validated.fdf \
 ```
 
 각 `U_X.Y` 폴더에는 `input.fdf`, `RUN.fdf`와 반복 지정한 모든 `--copy-file`이 들어갑니다.
-지원 파일은 의도적으로 basename으로만 복사하므로 베이스 입력을 self-contained하게 만들거나
-서로 이름이 겹치지 않는 모든 top-level include와 pseudopotential을 전달하십시오.
-`u_sweep_manifest.csv`에는 U, 수정한 species, 입력/reference/지원 파일 hash, 패키지 버전,
-Git commit과 dirty-tree 여부가 기록됩니다. `folders.list`가 PBS/SLURM array index의 단일
+지원 파일은 의도적으로 basename으로만 복사합니다. 준비 시점에 분할 FDF 의존성이 모두
+해석 가능해야 하며, 실행에 필요한 pseudopotential 같은 runtime 자산은 이름이 겹치지
+않게 전달하십시오. 분할 FDF는 각 `input.fdf`로 평탄화되므로 job 폴더에 include 파일을
+따로 복사할 필요가 없습니다. `u_sweep_manifest.csv`에는 root hash, 평탄화된 유효 입력
+hash, 순서가 보존된 의존 파일 목록과 파일별 hash, U, 수정한 species, 지원 파일 hash,
+패키지 버전, Git commit과 dirty-tree 여부가 기록됩니다. `folders.list`가 PBS/SLURM array index의 단일
 기준입니다. 과학적으로 의도한 경우 `--species-label CuA CuB`로 수정할 Cu label을 제한할
 수 있습니다.
 
@@ -563,11 +602,30 @@ magmom이 포함된 XYZ/CIF 구조를 저장할 수 있습니다. CLI가 기준 
 
 ## 입력과 인덱스 보존
 
-ASE가 CIF, XYZ, POSCAR/CONTCAR를 읽습니다. XV에는 ASE 실패 시 사용하는 별도 parser가 있습니다. FDF parser는 다음 block 및 재귀 `%include`를 처리합니다.
+ASE가 CIF, XYZ, POSCAR/CONTCAR를 읽습니다. XV에는 ASE 실패 시 사용하는 별도
+parser가 있습니다. FDF reader는 원자 순서를 보존하면서 libfdf의 세 가지 파일 구성
+문법을 모두 재귀적으로 해석합니다.
+
+- `%include defaults.fdf`
+- `Label1 Label2 < values.fdf` (하나 이상의 scalar 또는 block label)
+- `%block Label < block-body.dat` (끝의 `%dump`는 선택 사항)
+
+따옴표 경로, 지시문이 들어 있는 파일을 기준으로 한 상대경로, 중첩 의존성을 지원합니다.
+include/redirect 순환은 전체 의존 경로를 표시하며 거부합니다. 문법의 기준은 공식
+[SIESTA FDF file 문서](https://docs.siesta-project.org/projects/siesta/en/latest/reference/fdf-file.html)입니다.
+
+구조 parser는 이렇게 만든 유효 입력에서 다음 block을 읽습니다.
 
 - `ChemicalSpeciesLabel`
 - `AtomicCoordinatesAndAtomicSpecies`
 - `LatticeVectors`
+
+`generate --patch-input`, `patch`, GUI patched export, `prepare-array`,
+`prepare-u-sweep`는 **유효 FDF 전체**를 수정합니다. 분할 입력이면 결과는 독립 실행 가능한
+평탄화 FDF가 됩니다. 참조된 원본 파일은 수정하지 않으며, `--in-place`일 때도 root
+파일만 교체하고 `--backup`은 그 root만 백업합니다. libfdf는 먼저 나온 label 정의를
+사용하므로 이 평탄화가 필요합니다. root 끝에 새 정의만 추가하면 앞서 include된
+`Spin` 또는 `DM.InitSpin`이 계속 활성일 수 있습니다.
 
 어떤 입력에서도 원소 또는 좌표 기준 정렬을 하지 않습니다. 내부 `ase_index`는 0-based 원래 순서이며 `siesta_index`는 같은 순서의 1-based 인덱스입니다.
 

@@ -10,10 +10,16 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from . import __version__
+from .afm_models import (
+    AFM_MODELS,
+    AFMModel,
+    get_afm_model,
+    recommend_afm_models,
+)
 from .fdf_writer import patch_fdf_file, patch_fdf_text, render_dm_init_spin
 from .gui.controllers import angles_from_result, spin_values_from_inputs
 from .input_template import render_complete_input
-from .io import parse_dm_init_spin, read_structure
+from .io import parse_dm_init_spin, read_fdf_with_includes, read_structure
 from .magnetic_sites import (
     guess_oxidation_states,
     load_moment_config,
@@ -220,6 +226,26 @@ def _add_ordering_controls(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--anion-cutoff", default="auto")
     parser.add_argument("--up-coordination", type=int, nargs="+", default=[6])
     parser.add_argument("--down-coordination", type=int, nargs="+", default=[4])
+    parser.add_argument(
+        "--active-coordination",
+        type=int,
+        nargs="+",
+        default=[4],
+        help=(
+            "ligand CN values ordered by an active-site bipartite graph "
+            "(--method coordination-bipartite)"
+        ),
+    )
+    parser.add_argument(
+        "--inactive-coordination",
+        type=int,
+        nargs="+",
+        default=[6],
+        help=(
+            "ligand CN values assigned zero spin "
+            "(--method coordination-bipartite)"
+        ),
+    )
     parser.add_argument("--coordination-tolerance", type=int, default=0)
     parser.add_argument("--max-colors", type=int, default=4)
     parser.add_argument(
@@ -343,6 +369,32 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--fractional-layers", action="store_true")
     analyze.add_argument("--json", dest="json_output")
     analyze.set_defaults(func=_cmd_analyze)
+
+    models = subparsers.add_parser(
+        "afm-models",
+        help="list literature-backed AFM models or screen an input structure",
+    )
+    _add_input(models, help_text="optional structure file to screen")
+    _add_structure_controls(models)
+    models.add_argument(
+        "--magnetic-species",
+        nargs="+",
+        help="magnetic elements used for O-coordination diagnostics",
+    )
+    models.add_argument(
+        "--model",
+        choices=[model.model_id for model in AFM_MODELS],
+        help="show or retain one catalog model",
+    )
+    models.add_argument(
+        "--json",
+        dest="json_output",
+        nargs="?",
+        const="-",
+        metavar="PATH",
+        help="write JSON to PATH, or stdout when PATH is omitted",
+    )
+    models.set_defaults(func=_cmd_afm_models)
 
     validate = subparsers.add_parser("validate", help="validate a DM.InitSpin block")
     validate.add_argument("spin_file")
@@ -541,6 +593,8 @@ def _workflow_kwargs(args: argparse.Namespace) -> dict[str, Any]:
         "anion_cutoff": args.anion_cutoff,
         "up_coordination": args.up_coordination,
         "down_coordination": args.down_coordination,
+        "active_coordination": args.active_coordination,
+        "inactive_coordination": args.inactive_coordination,
         "coordination_tolerance": args.coordination_tolerance,
         "max_colors": args.max_colors,
         "color_spins": args.color_spins,
@@ -630,7 +684,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
             raise ValueError("refusing to overwrite input without --in-place")
     if args.backup:
         shutil.copy2(source, Path(str(source) + ".bak"))
-    patched = patch_fdf_text(source.read_text(encoding="utf-8-sig"), spin_text)
+    patched = patch_fdf_text(read_fdf_with_includes(source), spin_text)
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(patched, encoding="utf-8")
     print(destination)
@@ -722,6 +776,121 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         Path(args.json_output).write_text(
             json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
         )
+    return 0
+
+
+def _format_afm_model(model: AFMModel, *, compact: bool = False) -> str:
+    if compact:
+        return (
+            f"- {model.model_id}: {model.name} "
+            f"[{model.implementation_status}]"
+        )
+    lines = [
+        f"Model: {model.model_id}",
+        f"Name: {model.name}",
+        f"Family: {model.family}",
+        f"Examples: {', '.join(model.examples)}",
+        f"Ordering: {model.ordering}",
+        f"Implementation: {model.implementation_status}",
+        f"CLI strategy: {model.cli_strategy}",
+        "Caveats:",
+        *(f"- {item}" for item in model.caveats),
+        "Primary references:",
+        *(
+            f"- {reference.citation}; DOI {reference.doi}; {reference.url}"
+            for reference in model.references
+        ),
+    ]
+    return "\n".join(lines)
+
+
+def _emit_json(payload: object, destination: str) -> None:
+    text = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+    if destination == "-":
+        print(text, end="")
+    else:
+        path = Path(destination)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        print(path)
+
+
+def _cmd_afm_models(args: argparse.Namespace) -> int:
+    input_value = args.input_option or args.input_path
+    if input_value is None:
+        selected = [get_afm_model(args.model)] if args.model else list(AFM_MODELS)
+        payload: object = (
+            selected[0].to_dict()
+            if args.model
+            else {"models": [model.to_dict() for model in selected]}
+        )
+        if args.json_output:
+            _emit_json(payload, args.json_output)
+        elif args.model:
+            print(_format_afm_model(selected[0]))
+        else:
+            print("Available literature-backed magnetic-ordering models:")
+            for model in selected:
+                print(_format_afm_model(model, compact=True))
+            print("Use 'siesta-afm afm-models --model MODEL_ID' for details.")
+        return 0
+
+    structure = read_structure(
+        input_value, slab=args.slab, periodic_axes=args.periodic_axes
+    )
+    report = recommend_afm_models(structure, args.magnetic_species)
+    recommendations = list(report.recommendations)
+    if args.model:
+        recommendations = [
+            item for item in recommendations if item.model_id == args.model
+        ]
+    model_details = [
+        get_afm_model(item.model_id).to_dict() for item in recommendations
+    ]
+    payload = report.to_dict()
+    payload["recommendations"] = [item.to_dict() for item in recommendations]
+    payload["model_details"] = model_details
+    if args.json_output:
+        _emit_json(payload, args.json_output)
+        return 0
+
+    print(f"Input formula (reduced): {report.formula}")
+    print(
+        "Magnetic species: "
+        + (", ".join(report.magnetic_species) or "none inferred")
+    )
+    if report.coordination_counts:
+        coordination_text = "; ".join(
+            f"{element}: "
+            + ", ".join(
+                f"CN={coordination} x {count}"
+                for coordination, count in counts.items()
+            )
+            for element, counts in report.coordination_counts.items()
+        )
+        print(f"O coordination: {coordination_text}")
+    if recommendations:
+        print("Candidate models (screening only):")
+        for recommendation in recommendations:
+            model = get_afm_model(recommendation.model_id)
+            print(_format_afm_model(model, compact=True))
+            print(f"  Match: {recommendation.match_basis}")
+            for observation in recommendation.observations:
+                print(f"  - {observation}")
+            print(f"  Strategy: {model.cli_strategy}")
+            print(
+                "  Reference: "
+                + "; ".join(
+                    f"{reference.doi} ({reference.url})"
+                    for reference in model.references
+                )
+            )
+    else:
+        qualifier = f" matching --model {args.model}" if args.model else ""
+        print(f"No curated model{qualifier} matched this structure.")
+    print("Limitations:")
+    for limitation in report.limitations:
+        print(f"- {limitation}")
     return 0
 
 

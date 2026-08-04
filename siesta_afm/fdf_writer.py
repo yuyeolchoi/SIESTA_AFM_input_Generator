@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 from typing import Mapping, Sequence
 
+from .io import read_fdf_with_includes
 from .structure import Structure
 
 
@@ -266,7 +267,7 @@ def patch_fdf_file(
     if destination.resolve() == source.resolve() and not in_place:
         raise ValueError("refusing to overwrite input without --in-place")
     patched = patch_fdf_text(
-        source.read_text(encoding="utf-8-sig"),
+        read_fdf_with_includes(source),
         spin_source.read_text(encoding="utf-8-sig"),
     )
     if backup:

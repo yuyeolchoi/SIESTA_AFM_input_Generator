@@ -356,6 +356,125 @@ def coordination_ordering(
     )
 
 
+def coordination_bipartite_ordering(
+    structure: Structure,
+    indices: Sequence[int],
+    *,
+    anion_species: Sequence[str] | None = None,
+    anion_cutoff: str | float | None = "auto",
+    active_coordination: Sequence[int] = (4,),
+    inactive_coordination: Sequence[int] = (6,),
+    coordination_tolerance: int = 0,
+    cutoff: str | float | None = "auto",
+    neighbor_shell: int = 1,
+) -> SpinAssignment:
+    """Order one coordination class antiferromagnetically and zero the rest.
+
+    This is useful for normal spinels such as Co3O4, where tetrahedral A-site
+    Co2+ ions order antiferromagnetically while octahedral B-site Co3+ ions are
+    nonmagnetic. It deliberately separates ligand coordination (which sites
+    are active) from the magnetic-neighbor graph (how active sites alternate).
+    """
+
+    if coordination_tolerance < 0:
+        raise ValueError("coordination tolerance must be a nonnegative integer")
+    active_values = {int(value) for value in active_coordination}
+    inactive_values = {int(value) for value in inactive_coordination}
+    if (
+        not active_values
+        or not inactive_values
+        or min(active_values | inactive_values) < 0
+    ):
+        raise ValueError(
+            "active/inactive coordination lists must contain nonnegative integers"
+        )
+
+    analysis = analyze_coordination_sites(
+        structure,
+        indices,
+        anion_species=anion_species,
+        anion_cutoff=anion_cutoff,
+    )
+    active: list[int] = []
+    inactive: list[int] = []
+    unclassified: list[str] = []
+    for index in indices:
+        coordination = analysis.coordination_numbers[index]
+        matches_active = any(
+            abs(coordination - target) <= coordination_tolerance
+            for target in active_values
+        )
+        matches_inactive = any(
+            abs(coordination - target) <= coordination_tolerance
+            for target in inactive_values
+        )
+        if matches_active == matches_inactive:
+            reason = "matches both classes" if matches_active else "is unclassified"
+            unclassified.append(
+                f"atom {index + 1} ({structure.symbols[index]}, CN={coordination}) "
+                f"{reason}"
+            )
+        elif matches_active:
+            active.append(index)
+        else:
+            inactive.append(index)
+    if unclassified:
+        raise ValueError(
+            "; ".join(unclassified)
+            + ". Adjust --active-coordination/--inactive-coordination, "
+            "--coordination-tolerance, or exclude surface-truncated sites."
+        )
+    if len(active) < 2:
+        raise ValueError(
+            "coordination-bipartite requires at least two active magnetic sites"
+        )
+
+    ordered = neighbor_bipartite_ordering(
+        structure,
+        active,
+        cutoff=cutoff,
+        neighbor_shell=neighbor_shell,
+    )
+    signs = {index: 0 for index in indices}
+    signs.update(ordered.signs)
+    geometries = {
+        index: classify_coordination_geometry(analysis.ligand_vectors[index])
+        for index in indices
+    }
+    sublattices = {
+        index: (
+            "active-up"
+            if signs[index] > 0
+            else "active-down"
+            if signs[index] < 0
+            else "inactive-zero"
+        )
+        for index in indices
+    }
+    metadata = dict(ordered.metadata)
+    metadata.update(
+        {
+            "anion_species": analysis.anion_species,
+            "anion_cutoff": analysis.cutoff,
+            "anion_cutoffs": analysis.site_cutoffs,
+            "coordination_numbers": analysis.coordination_numbers,
+            "coordination_geometry": geometries,
+            "sublattice_classification": sublattices,
+            "active_coordination": sorted(active_values),
+            "inactive_coordination": sorted(inactive_values),
+            "coordination_tolerance": coordination_tolerance,
+            "active_indices": active,
+            "inactive_indices": inactive,
+        }
+    )
+    warnings = list(ordered.warnings)
+    warnings.append(
+        "inactive coordination sites are assigned exactly zero initial spin; "
+        "standard CLI/GUI renderers preserve them as explicit zero rows"
+    )
+    return SpinAssignment(signs, "coordination-bipartite", metadata, warnings)
+
+
 def detect_layers(
     structure: Structure,
     indices: Sequence[int],

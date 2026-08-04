@@ -49,6 +49,34 @@ def test_prepare_array_and_collect_synthetic_result(tmp_path: Path) -> None:
     assert rows[0]["status"] == "ok"
 
 
+def test_prepare_array_flattens_split_base_fdf(tmp_path: Path) -> None:
+    included = tmp_path / "base-settings.fdf"
+    included.write_text(
+        "SystemName split-array\nSpin non-polarized\n", encoding="utf-8"
+    )
+    root = tmp_path / "input.fdf"
+    root.write_text("%include base-settings.fdf\n", encoding="utf-8")
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    (configs / "afm_001.fdf").write_text(
+        "%block DM.InitSpin\n1 0.5\n2 -0.5\n%endblock DM.InitSpin\n",
+        encoding="utf-8",
+    )
+    (configs / "manifest.csv").write_text(
+        "config_id,method,file\n001,layer,afm_001.fdf\n", encoding="utf-8"
+    )
+
+    folders = prepare_array(root, configs, tmp_path / "jobs")
+
+    generated = (folders[0] / "input.fdf").read_text(encoding="utf-8")
+    assert "%include" not in generated.lower()
+    assert "SystemName split-array" in generated
+    assert generated.count("Spin polarized") == 1
+    assert included.read_text(encoding="utf-8") == (
+        "SystemName split-array\nSpin non-polarized\n"
+    )
+
+
 def test_parse_siesta_4_1_spin_resolved_mulliken() -> None:
     text = (FIXTURES / "siesta_4_1_mulliken.out").read_text(encoding="utf-8")
     spins, source = parse_local_spins(text)

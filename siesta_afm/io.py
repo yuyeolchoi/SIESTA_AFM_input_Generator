@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +16,29 @@ from .structure import Structure, periodic_axes_to_pbc
 
 _COMMENT_RE = re.compile(r"\s*[#!].*$")
 _INCLUDE_RE = re.compile(r"^\s*%include\s+(?P<name>.+?)\s*$", re.IGNORECASE)
+_BLOCK_REDIRECT_RE = re.compile(
+    r"^(?P<indent>\s*)%block\s+(?P<label>\S+)\s*<\s*(?P<name>.+?)\s*$",
+    re.IGNORECASE,
+)
+_LABEL_REDIRECT_RE = re.compile(
+    r"^\s*(?P<labels>[^%<]+?)\s*<\s*(?P<name>.+?)\s*$",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class FDFDocument:
+    """An FDF root expanded with all files that affect its effective input."""
+
+    root: Path
+    text: str
+    source_files: tuple[Path, ...]
+
+    @property
+    def is_split(self) -> bool:
+        """Return whether the effective input came from more than one file."""
+
+        return len(self.source_files) > 1
 
 
 def _fdf_label_pattern(name: str) -> str:
@@ -28,34 +52,193 @@ def _strip_comment(line: str) -> str:
     return _COMMENT_RE.sub("", line).strip()
 
 
-def read_fdf_with_includes(path: str | Path, _stack: tuple[Path, ...] = ()) -> str:
-    """Read an FDF file and recursively expand ``%include`` directives."""
+def _redirect_path(
+    raw_name: str, parent: Path, *, allow_dump: bool = False
+) -> Path:
+    value = raw_name.strip()
+    if allow_dump:
+        value = re.sub(r"\s+%dump\s*$", "", value, flags=re.IGNORECASE)
+    match = re.fullmatch(
+        r'"(?P<double>[^"]+)"|\'(?P<single>[^\']+)\'|(?P<bare>\S+)',
+        value,
+    )
+    if match is None:
+        raise ValueError(f"invalid FDF include/redirect path: {raw_name}")
+    name = next(group for group in match.groups() if group is not None)
+    return (parent / name).expanduser().resolve()
 
-    file_path = Path(path).expanduser().resolve()
-    if file_path in _stack:
-        chain = " -> ".join(str(item) for item in (*_stack, file_path))
-        raise ValueError(f"recursive FDF include detected: {chain}")
+
+def _register_fdf_source(
+    path: Path, *, stack: tuple[Path, ...], sources: list[Path]
+) -> Path:
+    file_path = path.expanduser().resolve()
+    if file_path in stack:
+        chain = " -> ".join(str(item) for item in (*stack, file_path))
+        raise ValueError(f"recursive FDF include/redirect detected: {chain}")
     if not file_path.is_file():
         raise FileNotFoundError(file_path)
+    if file_path not in sources:
+        sources.append(file_path)
+    return file_path
+
+
+def _normalized_fdf_label(label: str) -> str:
+    return re.sub(r"[._-]", "", label).lower()
+
+
+def _extract_redirected_labels(
+    text: str, labels: list[str], source: Path
+) -> str:
+    """Select first effective scalar or block definitions from an FDF source."""
+
+    requested: dict[str, str] = {}
+    for label in labels:
+        requested.setdefault(_normalized_fdf_label(label), label)
+    found: set[str] = set()
+    selected: list[str] = []
+    lines = text.splitlines()
+    index = 0
+    while index < len(lines) and len(found) < len(requested):
+        raw_line = lines[index]
+        code = _strip_comment(raw_line)
+        block_match = re.match(
+            r"^%block\s+(?P<label>\S+)(?:\s|$)", code, re.IGNORECASE
+        )
+        if block_match:
+            end = index + 1
+            while end < len(lines):
+                end_code = _strip_comment(lines[end])
+                if re.match(r"^%endblock(?:\s|$)", end_code, re.IGNORECASE):
+                    break
+                end += 1
+            if end == len(lines):
+                raise ValueError(
+                    f"unterminated redirected FDF block in {source}: "
+                    f"{block_match.group('label')}"
+                )
+            normalized = _normalized_fdf_label(block_match.group("label"))
+            if normalized in requested and normalized not in found:
+                selected.append("\n".join(lines[index : end + 1]))
+                found.add(normalized)
+            index = end + 1
+            continue
+        if code and not code.startswith("%"):
+            normalized = _normalized_fdf_label(code.split(None, 1)[0])
+            if normalized in requested and normalized not in found:
+                selected.append(raw_line)
+                found.add(normalized)
+        index += 1
+
+    missing = [
+        label for normalized, label in requested.items() if normalized not in found
+    ]
+    if missing:
+        raise ValueError(
+            f"redirected FDF label(s) {', '.join(missing)} were not found in {source}"
+        )
+    return "\n".join(selected)
+
+
+def _expand_fdf_file(
+    path: Path,
+    *,
+    stack: tuple[Path, ...],
+    sources: list[Path],
+) -> str:
+    """Expand one FDF source using libfdf include/redirection syntax."""
+
+    file_path = _register_fdf_source(path, stack=stack, sources=sources)
 
     expanded: list[str] = []
     for raw_line in file_path.read_text(encoding="utf-8-sig").splitlines():
-        match = _INCLUDE_RE.match(_strip_comment(raw_line))
-        if not match:
-            expanded.append(raw_line)
+        code = _strip_comment(raw_line)
+        include_match = _INCLUDE_RE.match(code)
+        if include_match:
+            include_path = _redirect_path(
+                include_match.group("name"), file_path.parent
+            )
+            expanded.append(
+                _expand_fdf_file(
+                    include_path,
+                    stack=(*stack, file_path),
+                    sources=sources,
+                ).rstrip("\r\n")
+            )
             continue
-        name = match.group("name").strip().strip("\"'")
-        include_path = (file_path.parent / name).resolve()
-        expanded.append(read_fdf_with_includes(include_path, (*_stack, file_path)))
+
+        block_match = _BLOCK_REDIRECT_RE.match(code)
+        if block_match:
+            include_path = _redirect_path(
+                block_match.group("name"), file_path.parent, allow_dump=True
+            )
+            body = _expand_fdf_file(
+                include_path,
+                stack=(*stack, file_path),
+                sources=sources,
+            ).rstrip("\r\n")
+            indent = block_match.group("indent")
+            label = block_match.group("label")
+            expanded.extend(
+                [
+                    f"{indent}%block {label}",
+                    body,
+                    f"{indent}%endblock {label}",
+                ]
+            )
+            continue
+
+        label_match = _LABEL_REDIRECT_RE.match(code)
+        if label_match:
+            include_path = _redirect_path(
+                label_match.group("name"), file_path.parent
+            )
+            redirected_text = _expand_fdf_file(
+                include_path,
+                stack=(*stack, file_path),
+                sources=sources,
+            )
+            expanded.append(
+                _extract_redirected_labels(
+                    redirected_text,
+                    label_match.group("labels").split(),
+                    include_path,
+                )
+            )
+            continue
+
+        expanded.append(raw_line)
     return "\n".join(expanded) + "\n"
+
+
+def read_fdf_document(path: str | Path) -> FDFDocument:
+    """Read the effective FDF input and retain ordered source provenance.
+
+    The supported libfdf composition forms are recursive ``%include``, one or
+    more redirected scalar/block labels (``Label1 Label2 < file``), and
+    external block bodies (``%block Label < file [%%dump]``).  The returned
+    text is a standalone flattened FDF suitable for safe editing without
+    mutating any referenced source file.
+    """
+
+    root = Path(path).expanduser().resolve()
+    sources: list[Path] = []
+    text = _expand_fdf_file(root, stack=(), sources=sources)
+    return FDFDocument(root, text, tuple(sources))
+
+
+def read_fdf_with_includes(path: str | Path) -> str:
+    """Return a standalone expansion of an FDF root and its dependencies."""
+
+    return read_fdf_document(path).text
 
 
 def _block(text: str, name: str) -> list[str] | None:
     label = _fdf_label_pattern(name)
     pattern = re.compile(
-        rf"(?ims)^\s*%block\s+{label}\s*$"
+        rf"(?ims)^[ \t]*%block[ \t]+{label}[ \t]*(?:[#!][^\r\n]*)?\r?$"
         rf"(?P<body>.*?)"
-        rf"^\s*%endblock(?:\s+{label})?\s*$"
+        rf"^[ \t]*%endblock(?:[ \t]+{label})?"
+        rf"[ \t]*(?:[#!][^\r\n]*)?\r?$"
     )
     match = pattern.search(text)
     return match.group("body").splitlines() if match else None
@@ -291,7 +474,13 @@ def parse_dm_init_spin(
         is_file = candidate.is_file()
     except OSError:
         is_file = False
-    text = candidate.read_text(encoding="utf-8-sig") if is_file else str(text_or_path)
+    text = (
+        read_fdf_with_includes(candidate)
+        if is_file and candidate.suffix.lower() == ".fdf"
+        else candidate.read_text(encoding="utf-8-sig")
+        if is_file
+        else str(text_or_path)
+    )
     block = _block(text, "DM.InitSpin")
     if block is None:
         raise ValueError("DM.InitSpin block not found")

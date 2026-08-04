@@ -1,5 +1,6 @@
 import csv
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -153,7 +154,7 @@ def test_prepare_u_sweep_writes_manifest_inputs_and_nurion_array(
         pseudopotential.read_bytes()
     )
     assert all(row["git_commit"] for row in manifest)
-    assert all(row["package_version"] == "0.3.3" for row in manifest)
+    assert all(row["package_version"] == "0.4.0" for row in manifest)
     assert all(row["git_dirty"] in {"true", "false", "unknown"} for row in manifest)
     assert result.scheduler_path is not None
     script = result.scheduler_path.read_text(encoding="utf-8")
@@ -171,6 +172,49 @@ def test_prepare_u_sweep_writes_manifest_inputs_and_nurion_array(
             element="Cu",
             u_values=[4],
         )
+
+
+def test_prepare_u_sweep_flattens_split_inputs_and_hashes_dependencies(
+    tmp_path: Path,
+) -> None:
+    body = tmp_path / "base-body.fdf"
+    body.write_text(_base_input(), encoding="utf-8")
+    base = tmp_path / "base.fdf"
+    base.write_text("%include base-body.fdf\n", encoding="utf-8")
+    spin_body = tmp_path / "spin.data"
+    spin_body.write_text("1 0.71\n3 -0.49\n", encoding="utf-8")
+    reference = tmp_path / "reference.fdf"
+    reference.write_text(
+        "%block DM.InitSpin < spin.data\n", encoding="utf-8"
+    )
+
+    result = prepare_u_sweep(
+        base,
+        reference,
+        tmp_path / "sweep",
+        element="Cu",
+        u_values=[6],
+    )
+
+    generated = (result.folders[0] / "input.fdf").read_text(encoding="utf-8")
+    assert "%include" not in generated.lower()
+    assert "%block DM.InitSpin <" not in generated
+    assert parse_dm_init_spin(generated) == [(1, 0.71), (3, -0.49)]
+    row = result.manifest[0]
+    assert json.loads(row["base_input_source_files"]) == [
+        "base.fdf",
+        "base-body.fdf",
+    ]
+    assert json.loads(row["spin_file_source_files"]) == [
+        "reference.fdf",
+        "spin.data",
+    ]
+    base_hashes = json.loads(row["base_input_source_files_sha256"])
+    spin_hashes = json.loads(row["spin_file_source_files_sha256"])
+    assert set(base_hashes) == {"base.fdf", "base-body.fdf"}
+    assert set(spin_hashes) == {"reference.fdf", "spin.data"}
+    assert row["base_input_effective_sha256"] != row["base_input_sha256"]
+    assert row["spin_file_effective_sha256"] != row["spin_file_sha256"]
 
 
 def test_prepare_u_sweep_rejects_incomplete_or_non_afm_reference(

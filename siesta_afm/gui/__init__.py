@@ -4,7 +4,7 @@ import sys
 from types import ModuleType
 
 from . import app as _app
-from .app import (
+from .app import (  # noqa: F401 - intentional private compatibility re-exports
     DesktopApp,
     _CameraState,
     _GuiDependencies,
@@ -12,7 +12,7 @@ from .app import (
     _load_matplotlib_tk_backend,
     main,
 )
-from .controllers import (
+from .controllers import (  # noqa: F401 - public and test compatibility re-exports
     GenerationParams,
     GenerationResult,
     ManualSpinRow,
