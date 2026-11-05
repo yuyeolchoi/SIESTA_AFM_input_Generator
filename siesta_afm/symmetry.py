@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Sequence
+
 import numpy as np
 from ase.data import atomic_numbers
 from ase.geometry import find_mic
@@ -76,3 +78,49 @@ def structure_symmetry_permutations(
             seen.add(item)
             permutations.append(item)
     return permutations
+
+
+def symmetry_orbits(
+    permutations: Sequence[Sequence[int]],
+    indices: Sequence[int] | None = None,
+) -> list[list[int]]:
+    """Group atoms into symmetry orbits from atom permutations.
+
+    Two atoms are in the same orbit when some permutation maps one onto the
+    other.  Only atoms in ``indices`` are grouped; permutation targets outside
+    that set are ignored.  Each orbit is sorted and the orbits are ordered by
+    their smallest member, so the first element is a deterministic
+    representative.
+    """
+
+    if not permutations:
+        raise ValueError("at least one permutation is required")
+    members = (
+        sorted(set(int(index) for index in indices))
+        if indices is not None
+        else list(range(len(permutations[0])))
+    )
+    member_set = set(members)
+    parent = {index: index for index in members}
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    for permutation in permutations:
+        for source in members:
+            if source >= len(permutation):
+                raise ValueError("permutation is shorter than the atom index range")
+            target = int(permutation[source])
+            if target in member_set:
+                root_source, root_target = find(source), find(target)
+                if root_source != root_target:
+                    parent[max(root_source, root_target)] = min(
+                        root_source, root_target
+                    )
+    orbits: dict[int, list[int]] = {}
+    for index in members:
+        orbits.setdefault(find(index), []).append(index)
+    return [sorted(orbit) for _, orbit in sorted(orbits.items())]

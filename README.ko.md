@@ -335,6 +335,53 @@ proper coloring은 인접 원자의 동색을 피할 뿐 에너지를 최소화�
 
 `validate`는 중복/범위 밖 인덱스, 선택 자기 원소가 아닌 원자의 nonzero spin, up/down 수, 순스핀을 검사합니다. `--structure`를 주면 최근접 edge의 antiparallel 비율(`AFM score`), 연결 성분 및 층별 분포도 계산합니다.
 
+## Vacancy 결함 모델
+
+`defects`는 한 원소의 대칭적으로 서로 다른 단일 vacancy 후보 자리와, 각 후보의 첫
+배위 shell에 있는 자기 원자를 나열합니다. `make-defect`는 선택한 원자를 제거하고
+결함 구조와 함께 이후 작업에 필요한 인덱스 장부를 씁니다.
+
+```bash
+# 서로 다른 O 자리는 무엇이고 각 자리는 어느 Co에 닿아 있는가?
+siesta-afm defects examples/Co3O4_spinel_COD1538531.cif \
+  --vacancy O --magnetic-species Co --symmetry-dedup --json o_sites.json
+
+# 대표 원자로 vacancy 모델을 만들고, 원본 spin block을 옮기고,
+# 각 Co 환경이 어떻게 바뀌었는지 보고
+siesta-afm make-defect examples/Co3O4_spinel_COD1538531.cif \
+  --remove-atoms 17 --output defect_O17.fdf \
+  --spin-file pristine_spin.fdf --magnetic-species Co --json defect_O17.json
+```
+
+`defects` 표는 orbit마다 대표 1-based 원자 인덱스, 다중도, 제거되는 원자의 첫 shell
+배위수와 기하, `--axis` 방향 층 번호, slab 바깥층 여부, 이웃 원소, 영향을 받는 자기
+원자를 보여 줍니다. 정렬은 표면 자리 우선, 그다음 배위수 오름차순입니다.
+`--symmetry-dedup`이 없으면 해당 원소의 모든 원자가 따로 나열되고, 있으면 spglib
+orbit을 사용합니다(`symmetry` extra 필요). slab에서는 대칭 검출 동안 셀을 완전 주기로
+취급하는데, 이는 비주기 방향에 진공이 있을 때만 타당하며 프로그램이 이를 알립니다.
+
+`make-defect`가 쓰는 파일은 다음과 같습니다.
+
+- 결함 구조(`.fdf`, `.cif`, `.xyz`, POSCAR). 원자를 제거하면 그 뒤의 모든 인덱스가
+  하나씩 앞으로 밀리므로, FDF 좌표 주석과 extended-XYZ의 `parent_index` 배열에
+  각 원자의 원본 인덱스를 기록합니다.
+- `<출력 stem>_index_map.csv`: `parent_index,child_index,element`.
+- `--spin-file`을 주면 `<출력 stem>_spin.fdf`: 원본 `DM.InitSpin`을 결함 구조 번호로
+  다시 매긴 블록. 제거된 원자의 행은 버리고 그 사실을 알립니다.
+- `--magnetic-species`를 주면 자기 원자별 첫 shell anion 배위수와 자기 이웃 수의
+  원본 대비 변화표, 그리고 CN이 바뀐 원자에 대한 `--moment Co@5=...` 같은 구체적인
+  제안. 제거된 자기 원자는 자기 그래프의 구멍으로 표시합니다.
+
+결함 후 anion 수는 각 원자의 **원본** 첫 shell cutoff로 세므로 "원래 ligand 중 몇 개가
+남았는가"에 답하고, 자기 이웃 수는 두 구조 모두 원본 neighbor cutoff를 사용합니다.
+
+spin 쪽 결과는 의도적으로 사용자에게 맡깁니다. O vacancy는 전자 2개를 남기고, 이
+전자는 인접 cation 하나 또는 여럿에 국소화되어 산화수나 스핀 상태를 바꿀 수
+있습니다(예: Co₃O₄의 저스핀 Co³⁺가 고스핀 Co²⁺로, CuO의 Cu²⁺가 비자성 Cu⁺로).
+프로그램은 그런 변화의 후보 원자를 알려 주며, 실제 moment는 명시적으로 정하고
+결함 구조에서 `enumerate`, `prepare-array`, `collect-results`로 대안을 총에너지로
+비교해야 합니다. 후보 정렬은 구조적 기준일 뿐 결함 formation energy 순위가 아닙니다.
+
 ## 총에너지로 여러 자기 상태 비교하기
 
 `make-input` + `enumerate` + `prepare-array` + `collect-results`를 조합하면 계산 조건은
@@ -711,4 +758,4 @@ GUI의 `by-coordination` 테이블에서 `use`는 이제 `(원소, CN)`별로 �
 python -m pytest
 ```
 
-테스트는 FDF/include/patch, 1D·square·triangle·분리 graph, slab PBC, layer clustering, ordering, 1-based writer 및 validation 오류 검출을 다룹니다.
+테스트는 FDF/include/patch, 1D·square·triangle·분리 graph, slab PBC, layer clustering, ordering, 1-based writer, vacancy 자리 열거와 parent 인덱스 재매핑, validation 오류 검출을 다룹니다.

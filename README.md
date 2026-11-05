@@ -392,6 +392,63 @@ compatible collinear output.
 
 `validate` checks for duplicate / out-of-range indices, nonzero spin on atoms that are not a selected magnetic element, up/down counts, and the net spin. When `--structure` is given, it also computes the nearest-neighbor antiparallel fraction (`AFM score`), connected components, and the per-layer distribution.
 
+## Vacancy defect models
+
+`defects` lists symmetry-distinct single-vacancy candidates for one element and
+the magnetic atoms in each candidate's first shell. `make-defect` removes the
+chosen atoms and writes the defect structure together with the bookkeeping that
+the rest of the toolchain needs.
+
+```bash
+# Which oxygen sites are distinct, and which Co atoms does each one touch?
+siesta-afm defects examples/Co3O4_spinel_COD1538531.cif \
+  --vacancy O --magnetic-species Co --symmetry-dedup --json o_sites.json
+
+# Build the vacancy model from a representative atom, carry the pristine
+# spin block over, and report how each Co environment changed.
+siesta-afm make-defect examples/Co3O4_spinel_COD1538531.cif \
+  --remove-atoms 17 --output defect_O17.fdf \
+  --spin-file pristine_spin.fdf --magnetic-species Co --json defect_O17.json
+```
+
+The `defects` table gives, per orbit, a representative one-based atom index,
+the multiplicity, the first-shell coordination number and geometry of the
+removed atom, its layer along `--axis`, whether it lies in an outer layer of a
+slab, the neighboring elements, and the affected magnetic atoms. Sites are
+ordered surface-first, then by increasing coordination number. Without
+`--symmetry-dedup` every atom of the element is listed separately;
+with it, spglib orbits are used (install the `symmetry` extra). For a slab the
+cell is treated as fully periodic during symmetry detection, which is valid
+only when the nonperiodic direction contains vacuum, and the tool says so.
+
+`make-defect` writes:
+
+- the defect structure (`.fdf`, `.cif`, `.xyz`, or POSCAR). Removing an atom
+  shifts every later index down by one, so FDF coordinate comments and the
+  extended-XYZ `parent_index` array record the pristine index of each atom;
+- `<output stem>_index_map.csv` with `parent_index,child_index,element`;
+- with `--spin-file`, `<output stem>_spin.fdf`: the pristine `DM.InitSpin`
+  renumbered onto the defect structure, with rows of removed atoms dropped and
+  reported;
+- with `--magnetic-species`, a pristine-versus-defect table of each magnetic
+  atom's first-shell anion coordination and magnetic-neighbor count, and
+  concrete suggestions such as `--moment Co@5=...` for the atoms whose CN
+  changed. Removed magnetic atoms are flagged as holes in the magnetic graph.
+
+The anion count after the defect uses each atom's *pristine* first-shell
+cutoff, so it answers "how many of the original ligands remain"; the magnetic
+neighbor count uses the pristine neighbor cutoff for both structures.
+
+The spin-side consequences are deliberately left to you. An oxygen vacancy
+leaves two electrons that may localize on one or several neighboring cations
+and change their oxidation or spin state (for example low-spin Co³⁺ in
+Co₃O₄ becoming high-spin Co²⁺, or Cu²⁺ in CuO becoming nonmagnetic Cu⁺).
+The tool reports which atoms are candidates for such a change; the actual
+moments must be chosen explicitly and the alternatives compared by total energy
+with `enumerate`, `prepare-array`, and `collect-results` on the defect
+structure. Candidate ordering is structural only and is not a defect
+formation-energy ranking.
+
 ## Comparing magnetic states by total energy
 
 Use `make-input` + `enumerate` + `prepare-array` + `collect-results` to compare
@@ -742,4 +799,5 @@ python -m pytest
 The tests cover FDF include/label/block redirection and flattened patching,
 literature-model screening, coordination-active spinel ordering, 1D / square /
 triangle / disconnected graphs, slab PBC, layer clustering, ordering, the
-one-based writer, and validation error detection.
+one-based writer, vacancy-site enumeration with parent-index remapping, and
+validation error detection.

@@ -56,6 +56,8 @@ def render_dm_init_spin(
         ("layer_tolerance", "Layer tolerance"),
         ("seed", "Seed / permutation index"),
         ("heuristic", "Heuristic"),
+        ("parent_spin_file", "Parent spin file"),
+        ("removed_parent_atoms", "Removed parent atoms"),
     ]
     for key, label in preferred:
         if key in metadata:

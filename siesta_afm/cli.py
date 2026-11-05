@@ -16,13 +16,28 @@ from .afm_models import (
     get_afm_model,
     recommend_afm_models,
 )
+from .defects import (
+    apply_vacancies,
+    compare_magnetic_environments,
+    enumerate_vacancy_sites,
+    format_environment_report,
+    format_vacancy_table,
+    remap_spin_rows,
+    write_index_map_csv,
+)
 from .fdf_writer import patch_fdf_file, patch_fdf_text, render_dm_init_spin
 from .gui.controllers import angles_from_result, spin_values_from_inputs
 from .input_template import render_complete_input
-from .io import parse_dm_init_spin, read_fdf_with_includes, read_structure
+from .io import (
+    parse_dm_init_spin,
+    read_fdf_with_includes,
+    read_structure,
+    write_structure,
+)
 from .magnetic_sites import (
     guess_oxidation_states,
     load_moment_config,
+    parse_atom_indices,
     select_magnetic_sites,
 )
 from .ordering import NonBipartiteError
@@ -395,6 +410,57 @@ def build_parser() -> argparse.ArgumentParser:
         help="write JSON to PATH, or stdout when PATH is omitted",
     )
     models.set_defaults(func=_cmd_afm_models)
+
+    defects = subparsers.add_parser(
+        "defects",
+        help="list symmetry-distinct vacancy candidates and the magnetic atoms they touch",
+    )
+    _add_input(defects)
+    _add_structure_controls(defects)
+    defects.add_argument(
+        "--vacancy",
+        required=True,
+        metavar="ELEMENT",
+        help="element to remove, e.g. O for an oxygen vacancy",
+    )
+    defects.add_argument("--magnetic-species", nargs="+", default=None)
+    defects.add_argument("--symmetry-dedup", action="store_true")
+    defects.add_argument("--symprec", type=float, default=1e-3)
+    defects.add_argument("--axis", choices=list("xyz"), default="z")
+    defects.add_argument("--layer-tolerance", type=float, default=0.25)
+    defects.add_argument("--json", dest="json_output")
+    defects.set_defaults(func=_cmd_defects)
+
+    make_defect = subparsers.add_parser(
+        "make-defect",
+        help="remove atoms, write the defect structure, its index map, and remapped spins",
+    )
+    _add_input(make_defect)
+    _add_structure_controls(make_defect)
+    make_defect.add_argument(
+        "--remove-atoms",
+        required=True,
+        help="one-based atom indices/ranges to remove, e.g. 17 or 17,18 or 17-20",
+    )
+    make_defect.add_argument("--output", required=True, help=".fdf, .cif, .xyz, or POSCAR")
+    make_defect.add_argument(
+        "--index-map",
+        help="CSV path for parent/child indices (default: <output stem>_index_map.csv)",
+    )
+    make_defect.add_argument(
+        "--spin-file",
+        help="pristine DM.InitSpin block/FDF to renumber onto the defect structure",
+    )
+    make_defect.add_argument(
+        "--spin-output",
+        help="destination for the remapped spin block (default: <output stem>_spin.fdf)",
+    )
+    make_defect.add_argument("--magnetic-species", nargs="+", default=None)
+    make_defect.add_argument("--anion-species", nargs="+")
+    make_defect.add_argument("--anion-cutoff", default="auto")
+    _add_neighbor_controls(make_defect)
+    make_defect.add_argument("--json", dest="json_output")
+    make_defect.set_defaults(func=_cmd_make_defect)
 
     validate = subparsers.add_parser("validate", help="validate a DM.InitSpin block")
     validate.add_argument("spin_file")
@@ -891,6 +957,124 @@ def _cmd_afm_models(args: argparse.Namespace) -> int:
     print("Limitations:")
     for limitation in report.limitations:
         print(f"- {limitation}")
+    return 0
+
+
+def _cmd_defects(args: argparse.Namespace) -> int:
+    structure = _read_from_args(args)
+    enumeration = enumerate_vacancy_sites(
+        structure,
+        args.vacancy,
+        magnetic_species=args.magnetic_species,
+        symmetry_dedup=args.symmetry_dedup,
+        symprec=args.symprec,
+        axis=args.axis,
+        layer_tolerance=args.layer_tolerance,
+    )
+    print(format_vacancy_table(enumeration))
+    for notice in enumeration.notices:
+        print(f"NOTE: {notice}", file=sys.stderr)
+    if args.json_output:
+        _emit_json(enumeration.to_dict(), args.json_output)
+    return 0
+
+
+def _cmd_make_defect(args: argparse.Namespace) -> int:
+    parent = _read_from_args(args)
+    remove = sorted(parse_atom_indices(args.remove_atoms))
+    if not remove:
+        raise ValueError("--remove-atoms must name at least one atom")
+    out_of_range = [index for index in remove if index > len(parent)]
+    if out_of_range:
+        raise ValueError(f"atom index to remove is out of range: {out_of_range[0]}")
+    child = apply_vacancies(parent, [index - 1 for index in remove])
+    removed_text = ", ".join(f"{index} ({parent.symbols[index - 1]})" for index in remove)
+
+    output = Path(args.output)
+    write_structure(
+        child,
+        output,
+        source_note=f"vacancy model of {_input_path(args)}; removed atoms {removed_text}",
+    )
+    print(output)
+    index_map_path = (
+        Path(args.index_map)
+        if args.index_map
+        else output.with_name(output.stem + "_index_map.csv")
+    )
+    write_index_map_csv(index_map_path, child)
+    print(index_map_path)
+    print(
+        f"Removed {len(remove)} atom(s): {removed_text}. "
+        f"{len(child)} atoms remain; indices after a removed atom shift down.",
+        file=sys.stderr,
+    )
+
+    payload: dict[str, object] = {
+        "input": _input_path(args),
+        "output": str(output),
+        "index_map": str(index_map_path),
+        "removed_atoms": remove,
+        "n_atoms_parent": len(parent),
+        "n_atoms_child": len(child),
+    }
+
+    if args.spin_file:
+        warnings: list[str] = []
+        rows = parse_dm_init_spin(args.spin_file, warnings=warnings)
+        for warning in warnings:
+            print(f"WARNING: {warning}", file=sys.stderr)
+        remapped, dropped = remap_spin_rows(rows, child, parent_length=len(parent))
+        if dropped:
+            print(
+                "Dropped DM.InitSpin rows for removed atoms: "
+                + ", ".join(str(index) for index in dropped),
+                file=sys.stderr,
+            )
+        spins = {int(index) - 1: float(value) for index, value in remapped}
+        species: list[str] = []
+        for index in spins:
+            symbol = child.symbols[index]
+            if symbol not in species:
+                species.append(symbol)
+        spin_text = render_dm_init_spin(
+            spins,
+            method="remapped-from-parent",
+            magnetic_species=species or (args.magnetic_species or []),
+            metadata={
+                "parent_spin_file": args.spin_file,
+                "removed_parent_atoms": remove,
+            },
+            structure=child,
+        )
+        spin_output = (
+            Path(args.spin_output)
+            if args.spin_output
+            else output.with_name(output.stem + "_spin.fdf")
+        )
+        spin_output.parent.mkdir(parents=True, exist_ok=True)
+        spin_output.write_text(spin_text, encoding="utf-8")
+        print(spin_output)
+        payload["spin_output"] = str(spin_output)
+        payload["dropped_spin_rows"] = dropped
+    elif args.spin_output:
+        raise ValueError("--spin-output requires --spin-file")
+
+    if args.magnetic_species:
+        report = compare_magnetic_environments(
+            parent,
+            child,
+            args.magnetic_species,
+            anion_species=args.anion_species,
+            anion_cutoff=args.anion_cutoff,
+            cutoff=args.cutoff,
+            neighbor_shell=args.neighbor_shell,
+        )
+        print(format_environment_report(report), file=sys.stderr)
+        payload["magnetic_environment"] = report.to_dict()
+
+    if args.json_output:
+        _emit_json(payload, args.json_output)
     return 0
 
 

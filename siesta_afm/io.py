@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 from ase import Atoms
-from ase.io import read as ase_read
+from ase.io import read as ase_read, write as ase_write
 from ase.units import Bohr
 
 from .structure import Structure, periodic_axes_to_pbc
@@ -526,3 +526,55 @@ def parse_dm_init_spin(
 
 def read_plain_fdf(path: str | Path) -> str:
     return Path(path).read_text(encoding="utf-8-sig")
+
+
+def write_structure(
+    structure: Structure, path: str | Path, *, source_note: str | None = None
+) -> Path:
+    """Write a structure without reordering atoms.
+
+    ``.fdf`` produces a structure-only FDF; CIF, extended XYZ, and
+    POSCAR/CONTCAR go through ASE.  Extended XYZ additionally stores
+    ``parent_index`` (one-based) per atom when the structure carries a
+    parent mapping.
+    """
+
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    suffix = destination.suffix.lower()
+    if suffix == ".fdf":
+        # Imported lazily: input_template depends on this module.
+        from .input_template import render_structure_fdf
+
+        destination.write_text(
+            render_structure_fdf(structure, source_note=source_note), encoding="utf-8"
+        )
+        return destination
+    if suffix == ".xv":
+        raise ValueError("writing SIESTA XV files is not supported; use .fdf, .cif, or .xyz")
+    atoms = Atoms(
+        structure.symbols,
+        positions=structure.positions,
+        cell=structure.cell,
+        pbc=structure.pbc,
+    )
+    if structure.parent_indices is not None:
+        atoms.new_array(
+            "parent_index",
+            np.asarray([index + 1 for index in structure.parent_indices], dtype=int),
+        )
+    if suffix == ".xyz":
+        ase_write(destination, atoms, format="extxyz")
+    elif suffix == ".cif":
+        ase_write(destination, atoms, format="cif")
+    elif destination.name.upper() in {"POSCAR", "CONTCAR"} or suffix in {
+        ".vasp",
+        ".poscar",
+    }:
+        ase_write(destination, atoms, format="vasp", direct=True, sort=False)
+    else:
+        raise ValueError(
+            f"unsupported structure output format {destination.suffix!r}; "
+            "use .fdf, .cif, .xyz, or POSCAR"
+        )
+    return destination

@@ -502,16 +502,46 @@ def _structure_section(
             ]
         )
     lines.extend(["", "AtomicCoordinatesFormat Ang", "%block AtomicCoordinatesAndAtomicSpecies"])
+    parents = structure.parent_indices
     for index, (symbol, position, species_id) in enumerate(
         zip(structure.symbols, structure.positions, atom_species_ids, strict=True),
         start=1,
     ):
+        comment = f"{symbol} {index}"
+        if parents is not None and parents[index - 1] + 1 != index:
+            comment += f" (parent {parents[index - 1] + 1})"
         lines.append(
             " ".join(f"{value:16.10f}" for value in position)
-            + f" {species_id:4d}  # {symbol} {index}"
+            + f" {species_id:4d}  # {comment}"
         )
     lines.append("%endblock AtomicCoordinatesAndAtomicSpecies")
     return _section("species and structure", lines)
+
+
+def render_structure_fdf(structure: Structure, *, source_note: str | None = None) -> str:
+    """Render a structure-only FDF (species, lattice, coordinates).
+
+    The output deliberately contains no SCF, basis, or spin settings so it can
+    be read back by :func:`siesta_afm.io.read_structure` or included from a
+    complete input.  Atom order and species IDs follow the same rules as
+    ``make-input``.
+    """
+
+    species_rows, atom_species_ids = _species_rows(structure)
+    header = ["# Structure written by siesta-afm"]
+    if source_note:
+        header.append(f"# {source_note}")
+    if structure.parent_indices is not None:
+        header.append(
+            "# Coordinate comments give '(parent N)' for atoms whose one-based "
+            "index differs from the pristine parent structure."
+        )
+    return (
+        "\n".join(header)
+        + "\n\n"
+        + _structure_section(structure, species_rows, atom_species_ids)
+        + "\n"
+    )
 
 
 def _basis_section(basis_size: str) -> str:

@@ -14,6 +14,11 @@ class Structure:
 
     Atom order is never changed.  ``siesta_index`` is therefore always the
     original one-based input position.
+
+    ``parent_indices`` is only set on structures derived from another one by
+    removing atoms (for example a vacancy model).  ``parent_indices[i]`` is the
+    zero-based index that atom ``i`` had in the pristine parent structure, so
+    the parent's atom numbering can always be recovered.
     """
 
     symbols: list[str]
@@ -22,6 +27,7 @@ class Structure:
     pbc: tuple[bool, bool, bool] = (False, False, False)
     species_ids: list[int | None] | None = None
     source: str | None = None
+    parent_indices: list[int] | None = None
 
     def __post_init__(self) -> None:
         self.symbols = [str(s) for s in self.symbols]
@@ -34,6 +40,14 @@ class Structure:
             self.species_ids = [None] * len(self.symbols)
         if len(self.species_ids) != len(self.symbols):
             raise ValueError("species_ids and symbols have different lengths")
+        if self.parent_indices is not None:
+            self.parent_indices = [int(value) for value in self.parent_indices]
+            if len(self.parent_indices) != len(self.symbols):
+                raise ValueError("parent_indices and symbols have different lengths")
+            if any(value < 0 for value in self.parent_indices):
+                raise ValueError("parent_indices must be nonnegative")
+            if len(set(self.parent_indices)) != len(self.parent_indices):
+                raise ValueError("parent_indices must not contain duplicates")
 
     def __len__(self) -> int:
         return len(self.symbols)
@@ -56,6 +70,9 @@ class Structure:
                 "element": symbol,
                 "species_id": self.species_ids[i],
                 "position": self.positions[i].copy(),
+                "parent_index": (
+                    self.parent_indices[i] if self.parent_indices is not None else i
+                ),
             }
             for i, symbol in enumerate(self.symbols)
         ]
@@ -68,6 +85,7 @@ class Structure:
             tuple(pbc),
             list(self.species_ids or []),
             self.source,
+            list(self.parent_indices) if self.parent_indices is not None else None,
         )
 
 
