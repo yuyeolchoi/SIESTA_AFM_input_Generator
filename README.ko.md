@@ -67,6 +67,50 @@ siesta-afm patch examples/input.fdf \
 
 `--in-place`를 지정하지 않으면 원본 FDF를 덮어쓰지 않습니다. `--backup`을 함께 사용하면 원본 옆에 `.bak` 파일을 만듭니다.
 
+## 완전한 CP2K 시작 입력
+
+`make-cp2k-input`은 `make-input`과 같은 자리 선택, 정렬 방법, moment에서, 또는
+`make-defect`가 다시 번호를 매긴 것과 같은 기존 `DM.InitSpin` 블록에서
+독립 실행 가능한 CP2K Quickstep 입력을 만듭니다.
+
+```bash
+siesta-afm make-cp2k-input examples/CuO_111_slab.cif --slab \
+  --magnetic-species Cu --method layer --moment 1.0 \
+  --hubbard-u Cu=6.0 --plus-u-method LOWDIN --output cuo_afm.inp
+
+# vacancy 모델로 옮긴 spin을 그대로 사용
+siesta-afm make-cp2k-input defect_O17.fdf --magnetic-species Co \
+  --spin-file defect_O17_spin.fdf --output defect_O17.inp
+```
+
+CP2K는 초기 자화를 원자가 아니라 `&KIND`별로 지정합니다. 그래서 writer는 원소와
+초기 spin이 같은 원자(방법이 제공하면 배위수까지)를 `Cu_up`/`Cu_dn` 또는
+`Co_cn4_up`/`Co_cn4_dn`/`Co_cn6_0` 같은 kind로 묶고, `&COORD`에 각 원자의 kind를
+**원래 입력 순서대로** 씁니다. `DM.InitSpin`의 μB 값은 원자 초기 추정의 unpaired
+electron 수인 `MAGNETIZATION`에 1:1로 대응합니다. `MULTIPLICITY`는 초기 순스핀에서
+계산하며, 원자가 전자 수와 맞지 않으면 경고와 함께 1 올립니다. 전하를 띤 결함은
+`--charge`로 `CHARGE`를 지정합니다.
+
+기본값은 실제 동작한 CPU 설정을 따르되 **미수렴 시작값**입니다. `BASIS_MOLOPT`의
+`DZVP-MOLOPT-SR-GTH`, 표준 `GTH-PBE-qN` potential(`--potential Cu=GTH-PBE-q19`로
+변경), `CUTOFF 600` Ry와 `REL_CUTOFF 60`, PBE와 DFT-D3(BJ)(`--no-dispersion`으로
+제외), `MINIMIZER CG`의 OT, `EPS_SCF 1e-6`, siesta-afm 주기축을 주석으로 남긴
+`PERIODIC XYZ`, 원자별 spin 확인용 Mulliken 출력입니다.
+
+알려진 CP2K 함정 두 가지를 검사로 넣었습니다.
+
+- 원자 초기 추정은 부분적으로 채워진 껍질만 분극하므로, 예를 들어 `GTH-PBE-q11`
+  Cu(4s¹3d¹⁰)는 |`MAGNETIZATION`| ≥ 2에서 중단됩니다. writer는
+  `--no-magnetization-check`가 없으면 그런 값을 거부합니다.
+- Hubbard U는 코드 간에 이전되지 않습니다. 기본 U를 쓰지 않으며,
+  `--hubbard-u Element=value`(배위 인식 방법에서는 `Element@CN=value`)를 주면
+  eV 단위 `U_MINUS_J`의 `&DFT_PLUS_U`를 추가하고, `--plus-u-method MULLIKEN|LOWDIN`은
+  의도적으로 선택해야 합니다.
+
+비공선 spin은 CP2K용으로 쓰지 않으며 셀이 꼭 필요합니다(분자는 먼저 상자를
+두십시오). 생성 파일은 템플릿이므로 cutoff, basis, SCF 설정, U를 수렴시키고 첫
+SCF 뒤 Mulliken spin을 확인해야 합니다.
+
 ## 생성 방법
 
 - `alternating-index`: 선택된 자기성 원자 목록 안에서만 `+ - + -`를 배정합니다.
@@ -758,4 +802,4 @@ GUI의 `by-coordination` 테이블에서 `use`는 이제 `(원소, CN)`별로 �
 python -m pytest
 ```
 
-테스트는 FDF/include/patch, 1D·square·triangle·분리 graph, slab PBC, layer clustering, ordering, 1-based writer, vacancy 자리 열거와 parent 인덱스 재매핑, validation 오류 검출을 다룹니다.
+테스트는 FDF/include/patch, 1D·square·triangle·분리 graph, slab PBC, layer clustering, ordering, 1-based writer, vacancy 자리 열거와 parent 인덱스 재매핑, CP2K kind별 writer, validation 오류 검출을 다룹니다.

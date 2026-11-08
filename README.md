@@ -121,6 +121,54 @@ both `DFTU.Proj` and the `LDAU.Proj` alias. See the
 [SIESTA DFT+U reference](https://docs.siesta-project.org/projects/siesta/en/stable/reference/siesta.html),
 and [Materials Project U-value methodology](https://docs.materialsproject.org/methodology/materials-methodology/calculation-details/gga%2Bu-calculations/hubbard-u-values).
 
+## Complete CP2K starting input
+
+`make-cp2k-input` writes a self-contained CP2K Quickstep input from the same
+site selection, ordering method, and moments as `make-input`, or from an
+existing `DM.InitSpin` block such as the one `make-defect` renumbers.
+
+```bash
+siesta-afm make-cp2k-input examples/CuO_111_slab.cif --slab \
+  --magnetic-species Cu --method layer --moment 1.0 \
+  --hubbard-u Cu=6.0 --plus-u-method LOWDIN --output cuo_afm.inp
+
+# Reuse spins carried over to a vacancy model
+siesta-afm make-cp2k-input defect_O17.fdf --magnetic-species Co \
+  --spin-file defect_O17_spin.fdf --output defect_O17.inp
+```
+
+CP2K sets the initial magnetization per `&KIND`, not per atom. The writer
+therefore groups atoms that share an element and initial spin (and, when the
+method provides it, coordination number) into kinds such as `Cu_up` / `Cu_dn`
+or `Co_cn4_up` / `Co_cn4_dn` / `Co_cn6_0`, and names each atom's kind in
+`&COORD` **in the original input order**. `DM.InitSpin` values in μB map
+one-to-one onto `MAGNETIZATION` (unpaired electrons in the atomic guess).
+`MULTIPLICITY` follows the net initial spin and is raised by one, with a
+warning, when the valence electron count makes it impossible; `--charge` sets
+`CHARGE` for charged defects.
+
+Defaults follow a working CPU setup and are **unconverged starting values**:
+`DZVP-MOLOPT-SR-GTH` with `BASIS_MOLOPT`, standard `GTH-PBE-qN` potentials
+(override with `--potential Cu=GTH-PBE-q19`), `CUTOFF 600` Ry /
+`REL_CUTOFF 60`, PBE with DFT-D3(BJ) (`--no-dispersion` to drop it), OT with
+`MINIMIZER CG`, `EPS_SCF 1e-6`, `PERIODIC XYZ` with a comment recording the
+siesta-afm periodic axes, and a Mulliken print for atom-resolved spins.
+
+Two checks encode known CP2K pitfalls:
+
+- the atomic guess only polarizes partly filled shells, so for example
+  `GTH-PBE-q11` Cu (4s¹3d¹⁰) aborts for |`MAGNETIZATION`| ≥ 2; the writer
+  refuses such values unless `--no-magnetization-check` is given;
+- Hubbard U does not transfer between codes. No default U is written; pass
+  `--hubbard-u Element=value` (or `Element@CN=value` with a coordination-aware
+  method) to add `&DFT_PLUS_U` with `U_MINUS_J` in eV, and choose
+  `--plus-u-method MULLIKEN|LOWDIN` deliberately.
+
+Non-collinear spins are not written for CP2K, and a cell is required (add a
+box around a molecule first). The generated file is a template: converge the
+cutoffs, basis, SCF settings, and U, and check the Mulliken spins after the
+first SCF.
+
 ## Generation methods
 
 - `alternating-index`: assigns `+ - + -` within the selected magnetic-atom list only.
@@ -799,5 +847,5 @@ python -m pytest
 The tests cover FDF include/label/block redirection and flattened patching,
 literature-model screening, coordination-active spinel ordering, 1D / square /
 triangle / disconnected graphs, slab PBC, layer clustering, ordering, the
-one-based writer, vacancy-site enumeration with parent-index remapping, and
-validation error detection.
+one-based writer, vacancy-site enumeration with parent-index remapping, the CP2K
+per-kind writer, and validation error detection.

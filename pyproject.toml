@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "siesta-afm"
 version = "0.4.0"
-description = "Generate and validate SIESTA DM.InitSpin antiferromagnetic initial states"
+description = "Generate and validate SIESTA DM.InitSpin (and CP2K per-kind) antiferromagnetic initial states"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

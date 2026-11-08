@@ -16,6 +16,7 @@ from .afm_models import (
     get_afm_model,
     recommend_afm_models,
 )
+from .cp2k_writer import render_cp2k_input
 from .defects import (
     apply_vacancies,
     compare_magnetic_environments,
@@ -365,6 +366,74 @@ def build_parser() -> argparse.ArgumentParser:
     )
     make_input.add_argument("--system-name")
     make_input.set_defaults(func=_cmd_make_input)
+
+    make_cp2k = subparsers.add_parser(
+        "make-cp2k-input",
+        help="generate a complete CP2K Quickstep starting input (per-kind MAGNETIZATION)",
+    )
+    _add_input(make_cp2k)
+    _add_structure_controls(make_cp2k)
+    _add_site_controls(make_cp2k)
+    make_cp2k.add_argument(
+        "--method",
+        choices=METHODS,
+        help="generate the initial spins with this method (or use --spin-file)",
+    )
+    make_cp2k.add_argument(
+        "--spin-file",
+        help="reuse an existing DM.InitSpin block/FDF (e.g. from make-defect) instead of --method",
+    )
+    _add_manual_spin_controls(make_cp2k)
+    _add_ordering_controls(make_cp2k)
+    make_cp2k.add_argument("--seed", type=int, default=0)
+    make_cp2k.add_argument("--output")
+    _add_site_comment_control(make_cp2k)
+    make_cp2k.add_argument("--project-name")
+    make_cp2k.add_argument(
+        "--run-type",
+        choices=["ENERGY", "ENERGY_FORCE", "GEO_OPT", "CELL_OPT", "MD"],
+        default="ENERGY",
+    )
+    make_cp2k.add_argument("--basis-set", default="DZVP-MOLOPT-SR-GTH")
+    make_cp2k.add_argument("--basis-set-file", default="BASIS_MOLOPT")
+    make_cp2k.add_argument("--potential-file", default="GTH_POTENTIALS")
+    make_cp2k.add_argument(
+        "--potential",
+        nargs="+",
+        metavar="Element=GTH-PBE-qN",
+        help="override the default GTH potential name per element",
+    )
+    make_cp2k.add_argument("--cutoff-ry", type=float, default=600.0, help="MGRID CUTOFF in Ry")
+    make_cp2k.add_argument("--rel-cutoff", type=float, default=60.0)
+    make_cp2k.add_argument("--eps-scf", type=float, default=1.0e-6)
+    make_cp2k.add_argument("--max-scf", type=int, default=60)
+    make_cp2k.add_argument("--outer-max-scf", type=int, default=20)
+    make_cp2k.add_argument(
+        "--ot-minimizer", choices=["CG", "DIIS", "SD", "BROYDEN"], default="CG"
+    )
+    make_cp2k.add_argument(
+        "--no-dispersion", dest="dispersion", action="store_false", default=True,
+        help="omit the DFT-D3(BJ) correction",
+    )
+    make_cp2k.add_argument(
+        "--hubbard-u",
+        nargs="+",
+        help="CP2K U_MINUS_J per element in eV, e.g. Cu=6.0 or Co@4=3.0 Co@6=5.0 (no defaults)",
+    )
+    make_cp2k.add_argument(
+        "--plus-u-method",
+        choices=["MULLIKEN", "MULLIKEN_CHARGES", "LOWDIN"],
+        default="MULLIKEN",
+    )
+    make_cp2k.add_argument("--charge", type=int, default=0, help="total charge (e.g. charged defects)")
+    make_cp2k.add_argument(
+        "--no-magnetization-check",
+        dest="magnetization_check",
+        action="store_false",
+        default=True,
+        help="write MAGNETIZATION values the GTH atomic guess cannot polarize",
+    )
+    make_cp2k.set_defaults(func=_cmd_make_cp2k_input)
 
     analyze = subparsers.add_parser("analyze", help="analyze the magnetic graph")
     _add_input(analyze)
@@ -806,6 +875,111 @@ def _cmd_make_input(args: argparse.Namespace) -> int:
     )
     for warning in (*assignment.warnings, *result.warnings):
         print(f"WARNING:\n{warning}", file=sys.stderr)
+    if args.output:
+        destination = Path(args.output)
+        if destination.resolve() == Path(input_path).resolve():
+            raise ValueError("refusing to overwrite the source structure with --output")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(result.text, encoding="utf-8")
+        print(destination)
+    else:
+        print(result.text, end="")
+    return 0
+
+
+def _cmd_make_cp2k_input(args: argparse.Namespace) -> int:
+    if (args.method is None) == (args.spin_file is None):
+        raise ValueError("make-cp2k-input requires exactly one of --method or --spin-file")
+    input_path = _input_path(args)
+    structure = _read_from_args(args)
+    if args.spin_file:
+        if args.moment or args.moment_config or args.site_moment_file:
+            raise ValueError(
+                "--moment/--moment-config/--site-moment-file cannot be combined with "
+                "--spin-file; the spin file already carries signed values"
+            )
+        parse_warnings: list[str] = []
+        rows = parse_dm_init_spin(args.spin_file, warnings=parse_warnings)
+        for warning in parse_warnings:
+            print(f"WARNING: {warning}", file=sys.stderr)
+        wanted = {item.lower() for item in args.magnetic_species}
+        spins: dict[int, float] = {}
+        for index, value in rows:
+            if not 1 <= index <= len(structure):
+                raise ValueError(f"DM.InitSpin atom index out of range: {index}")
+            if value != 0 and structure.symbols[index - 1].lower() not in wanted:
+                raise ValueError(
+                    f"spin file gives nonzero spin to atom {index} "
+                    f"({structure.symbols[index - 1]}), which is not in --magnetic-species"
+                )
+            spins[index - 1] = float(value)
+        method = f"spin-file:{Path(args.spin_file).name}"
+        metadata: dict[str, object] = {}
+        assignment_warnings: list[str] = []
+        angles = None
+    else:
+        if args.guess_oxidation_states:
+            states = guess_oxidation_states(structure)
+            print(
+                "WARNING: oxidation states were guessed heuristically and must be "
+                "checked before use.",
+                file=sys.stderr,
+            )
+            print(
+                "Guessed oxidation states: " + " ".join(f"{v:g}" for v in states),
+                file=sys.stderr,
+            )
+        _, assignment, spins = generate_assignment(
+            structure,
+            args.magnetic_species,
+            args.method,
+            _moment_values(args),
+            spin_values=_manual_spin_values(args),
+            fill_unspecified_zero=args.fill_unspecified_zero,
+            seed=args.seed,
+            **_workflow_kwargs(args),
+        )
+        method = assignment.method
+        metadata = assignment.metadata
+        assignment_warnings = list(assignment.warnings)
+        angles = angles_from_result(assignment)
+    result = render_cp2k_input(
+        structure,
+        spins,
+        method=method,
+        magnetic_species=args.magnetic_species,
+        metadata=metadata,
+        angles=angles,
+        project_name=args.project_name,
+        run_type=args.run_type,
+        basis_set=args.basis_set,
+        basis_set_file=args.basis_set_file,
+        potential_file=args.potential_file,
+        potentials=args.potential,
+        cutoff=args.cutoff_ry,
+        rel_cutoff=args.rel_cutoff,
+        eps_scf=args.eps_scf,
+        max_scf=args.max_scf,
+        outer_max_scf=args.outer_max_scf,
+        ot_minimizer=args.ot_minimizer,
+        dispersion=args.dispersion,
+        hubbard_u=args.hubbard_u,
+        plus_u_method=args.plus_u_method,
+        charge=args.charge,
+        magnetization_check=args.magnetization_check,
+        site_comments=args.site_comments,
+    )
+    for warning in (*assignment_warnings, *result.warnings):
+        print(f"WARNING:\n{warning}", file=sys.stderr)
+    print(
+        "CP2K kinds: "
+        + ", ".join(
+            f"{kind.label}={kind.magnetization:g} ({len(kind.atom_indices)} atoms)"
+            for kind in result.kinds
+        )
+        + f"; MULTIPLICITY {result.multiplicity}; CHARGE {result.charge}",
+        file=sys.stderr,
+    )
     if args.output:
         destination = Path(args.output)
         if destination.resolve() == Path(input_path).resolve():
