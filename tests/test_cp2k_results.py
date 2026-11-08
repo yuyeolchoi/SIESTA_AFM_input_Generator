@@ -173,19 +173,19 @@ def test_collect_results_mixed_codes_in_one_table(tmp_path: Path) -> None:
 def test_render_cp2k_slurm_script_contains_preflight_and_is_valid_bash(tmp_path: Path) -> None:
     script = render_cp2k_slurm_script(
         3,
-        partition="gpuq",
+        partition="cpu",
         ntasks=8,
         memory="40G",
         max_concurrent=1,
-        cp2k_env="/scratch/9_CP2K/cp2k-2026.2/install/cp2k_env",
+        cp2k_env="/opt/cp2k/cp2k_env",
     )
 
     assert "#SBATCH --array=1-3%1" in script
-    assert "#SBATCH --partition=gpuq" in script
+    assert "#SBATCH --partition=cpu" in script
     assert "#SBATCH --mem=40G" in script
     assert "export OMP_NUM_THREADS=1" in script
     assert "grep -v 'hpc_sdk'" in script
-    assert 'source "/scratch/9_CP2K/cp2k-2026.2/install/cp2k_env"' in script
+    assert 'source "/opt/cp2k/cp2k_env"' in script
     assert "*/install/bin/*) ;;" in script
     assert 'grep -q "not found"' in script and 'libmpi.so.40' in script
     assert 'OUT="cp2k_${SLURM_JOB_ID}.out"' in script
@@ -318,6 +318,8 @@ def test_prepare_cp2k_array_cli_then_collect(tmp_path: Path, capsys: pytest.Capt
                 "4",
                 "--walltime",
                 "01:00:00",
+                "--cp2k-env",
+                "/opt/cp2k/cp2k_env",
             ]
         )
         == 0

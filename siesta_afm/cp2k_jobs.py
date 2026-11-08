@@ -34,7 +34,7 @@ def render_cp2k_slurm_script(
     job_count: int,
     *,
     job_name: str = "cp2k_afm",
-    partition: str | None = "gpuq",
+    partition: str | None = None,
     ntasks: int = 8,
     cpus_per_task: int = 1,
     walltime: str = "04:00:00",

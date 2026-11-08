@@ -567,7 +567,8 @@ SIESTA `.EIG`가 있으면 SCF k-mesh에서 표본화한 gap과 direct/indirect 
 ```bash
 siesta-afm prepare-cp2k-array examples/Co3O4_spinel_COD1538531.cif \
   --magnetic-species Co --configs afm_candidates --output-dir cp2k_jobs \
-  --hubbard-u Co=3.0 --ntasks 8 --walltime 04:00:00 --mem 40G
+  --hubbard-u Co=3.0 --cp2k-env /path/to/cp2k_env --partition PARTITION \
+  --ntasks 8 --walltime 04:00:00 --mem 40G
 
 # sbatch cp2k_jobs/run_cp2k_array.sbatch   (클러스터에서)
 
@@ -579,7 +580,8 @@ siesta-afm collect-results cp2k_jobs
 작업별 kind, `MULTIPLICITY`, `CHARGE`를 기록하며, `run_cp2k_array.sbatch`가 array task
 하나당 폴더 하나를 실행합니다. 스크립트는 검증된 CPU 빌드의 규칙을 따릅니다.
 `OMP_NUM_THREADS=1`과 core당 MPI rank 하나, NVHPC 경로 제거(`--keep-nvhpc`로 해제),
-module 대신 `--cp2k-env` 파일 source(`--module`로 module 빌드 지원), 실행 파일이
+module 대신 `--cp2k-env` 파일 source(`--module`로 module 빌드 지원, 둘 중 하나는 필수이며
+`--partition`은 지정할 때만 기록), 실행 파일이
 `install/bin` 아래가 아니거나 `ldd`에 미해결 라이브러리가 있거나 NVHPC 라이브러리가
 잡히거나 `libmpi.so.40`이 둘 이상이면 시작을 거부하는 preflight, CP2K가 기존 출력
 파일에 덧붙이기 때문에 쓰는 작업별 출력 이름, 그리고 `exit_code` 파일입니다.

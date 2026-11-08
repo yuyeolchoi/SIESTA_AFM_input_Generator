@@ -357,7 +357,7 @@ def _cp2k_writer_kwargs(args: argparse.Namespace) -> dict[str, Any]:
 def _add_cp2k_job_controls(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-job-script", dest="job_script", action="store_false", default=True)
     parser.add_argument("--job-name", default="cp2k_afm")
-    parser.add_argument("--partition", default="gpuq")
+    parser.add_argument("--partition", help="SLURM partition (omitted when not given)")
     parser.add_argument("--ntasks", type=int, default=8)
     parser.add_argument("--cpus-per-task", type=int, default=1)
     parser.add_argument("--walltime", default="04:00:00")
@@ -365,8 +365,10 @@ def _add_cp2k_job_controls(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-concurrent", type=int)
     parser.add_argument(
         "--cp2k-env",
-        default="/scratch/9_CP2K/cp2k-2026.2/install/cp2k_env",
-        help="environment file sourced before running (pass --module instead for a module build)",
+        help=(
+            "environment file sourced before running, e.g. the cp2k_env of a toolchain "
+            "build; required unless --module is given"
+        ),
     )
     parser.add_argument("--module", help="module to load instead of sourcing --cp2k-env")
     parser.add_argument("--cp2k-exe", default="cp2k.psmp")

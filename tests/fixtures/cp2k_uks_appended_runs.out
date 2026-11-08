@@ -1,6 +1,6 @@
  DBCSR| CPU Multiplication driver                                           XSMM
   **** **** ******  **  PROGRAM STARTED AT               2026-11-05 09:00:00.000
- ***** ** ***  *** **   PROGRAM STARTED ON                                yuyeol
+ ***** ** ***  *** **   PROGRAM STARTED ON                                node01
  GLOBAL| Project name                                                    afm_001
  GLOBAL| Run type                                                         ENERGY
 
@@ -25,7 +25,7 @@
  *   IGNORE_CONVERGENCE_FAILURE                                                *
  *******************************************************************************
   **** **** ******  **  PROGRAM STARTED AT               2026-11-05 10:00:00.000
- ***** ** ***  *** **   PROGRAM STARTED ON                                yuyeol
+ ***** ** ***  *** **   PROGRAM STARTED ON                                node01
  GLOBAL| Project name                                                    afm_001
  GLOBAL| Run type                                                         ENERGY
 

@@ -657,7 +657,8 @@ magnetic sites.
 ```bash
 siesta-afm prepare-cp2k-array examples/Co3O4_spinel_COD1538531.cif \
   --magnetic-species Co --configs afm_candidates --output-dir cp2k_jobs \
-  --hubbard-u Co=3.0 --ntasks 8 --walltime 04:00:00 --mem 40G
+  --hubbard-u Co=3.0 --cp2k-env /path/to/cp2k_env --partition PARTITION \
+  --ntasks 8 --walltime 04:00:00 --mem 40G
 
 # sbatch cp2k_jobs/run_cp2k_array.sbatch   (on the cluster)
 
@@ -670,7 +671,8 @@ Each `<config_id>_<method>` folder receives an `input.inp` rendered with the
 job, and `run_cp2k_array.sbatch` runs one folder per array task. The script
 follows the conventions of a verified CPU build: `OMP_NUM_THREADS=1` with one
 MPI rank per core, NVHPC paths stripped (`--keep-nvhpc` to disable), the
-`--cp2k-env` file sourced instead of a module (`--module` for a module build),
+`--cp2k-env` file sourced instead of a module (`--module` for a module build;
+one of the two is required, and `--partition` is written only when given),
 a preflight that refuses to start when the binary is not under `install/bin`,
 `ldd` reports unresolved libraries, NVHPC libraries resolve, or two
 `libmpi.so.40` are present, a per-job output name because CP2K appends to an
