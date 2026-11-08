@@ -497,6 +497,55 @@ with `enumerate`, `prepare-array`, and `collect-results` on the defect
 structure. Candidate ordering is structural only and is not a defect
 formation-energy ranking.
 
+### Spin candidates for a vacancy from electron counting
+
+`defect-spins` turns the structural report of `make-defect` into runnable
+initial-state candidates. Removing an O²⁻ leaves two electrons in the lattice;
+removing a cation leaves holes. The command offers those carriers to the
+magnetic atoms around the vacancy in every bookkeeping variant and writes one
+`DM.InitSpin` block per variant, in the directory layout `enumerate` produces,
+so `prepare-array` and `prepare-cp2k-array` can run them unchanged.
+
+```bash
+siesta-afm defect-spins examples/Co3O4_spinel_COD1538531.cif \
+  --remove-atoms 17 --magnetic-species Co --spin-file pristine_spin.fdf \
+  --oxidation-states Co@4=+2 Co@6=+3 --spin-states high,low \
+  --output-dir defect_O17_candidates
+
+siesta-afm prepare-cp2k-array defect_O17_candidates/defect.fdf \
+  --magnetic-species Co --configs defect_O17_candidates --output-dir cp2k_defect_jobs
+```
+
+Inputs are the pristine structure, the atoms to remove, the pristine spin
+block whose signs are inherited, and the nominal oxidation states
+(`Element=+3` or `Element@CN=+2`; common anions default to their usual states,
+and `--charge` removes carriers for a charged defect). Acceptors are the
+magnetic atoms in the first shell of the removed atom, or, for a cation
+vacancy, those sharing one of its ligands. Three carrier schemes are written:
+`localized` (all carriers on one acceptor, one candidate per inequivalent
+acceptor), `split` (one carrier per acceptor over every inequivalent
+combination), and `delocalized` (an even fractional share, with the moment
+interpolated between integer configurations as pure bookkeeping). Each new
+oxidation state gets its spin-only moment from the d-electron count, high-spin
+by default and also low-spin with `--spin-states high,low`; low spin is
+applied to octahedral (CN=6) acceptors only. Moments that already existed keep
+their pristine sign and value; moments that appear on previously nonmagnetic
+atoms are written with both signs (`--new-moment-signs up|down` to choose one),
+and `--flip-changed` adds sign-flipped variants of the changed atoms.
+Equivalent acceptors are grouped by element, coordination number, pristine
+sign, and pristine oxidation state; the manifest records the multiplicity.
+
+The output directory holds `defect.fdf` (or another format via
+`--structure-name`), `index_map.csv`, the `afm_NNN.fdf` blocks, a
+`manifest.csv` with the `enumerate` columns plus `scheme`, `spin_state`,
+`sign_variant`, `acceptors`, `new_oxidation_states`, and `multiplicity`, and
+`candidates.json`. Configurations that would need a d-electron count outside
+d⁰ to d¹⁰ are skipped with a notice (for example two electrons on one Cu²⁺),
+and a notice is printed when a candidate removes a pristine moment entirely
+(Cu²⁺ to Cu⁺ d¹⁰ next to an O vacancy in CuO). None of this predicts which
+candidate is the ground state: run them and compare converged total energies
+and final local moments.
+
 ## Comparing magnetic states by total energy
 
 Use `make-input` + `enumerate` + `prepare-array` + `collect-results` to compare
@@ -887,5 +936,6 @@ python -m pytest
 The tests cover FDF include/label/block redirection and flattened patching,
 literature-model screening, coordination-active spinel ordering, 1D / square /
 triangle / disconnected graphs, slab PBC, layer clustering, ordering, the
-one-based writer, vacancy-site enumeration with parent-index remapping, the CP2K
-per-kind writer, CP2K job arrays and output parsing, and validation error detection.
+one-based writer, vacancy-site enumeration with parent-index remapping,
+electron-counting defect spin candidates, the CP2K per-kind writer, CP2K job
+arrays and output parsing, and validation error detection.

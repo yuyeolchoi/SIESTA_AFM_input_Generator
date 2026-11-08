@@ -18,6 +18,12 @@ from .afm_models import (
 )
 from .cp2k_jobs import prepare_cp2k_array
 from .cp2k_writer import render_cp2k_input
+from .defect_spins import (
+    SCHEMES,
+    enumerate_defect_spin_candidates,
+    format_defect_spin_summary,
+    write_defect_spin_candidates,
+)
 from .defects import (
     apply_vacancies,
     compare_magnetic_environments,
@@ -40,6 +46,7 @@ from .magnetic_sites import (
     guess_oxidation_states,
     load_moment_config,
     parse_atom_indices,
+    parse_oxidation_state_arguments,
     select_magnetic_sites,
 )
 from .ordering import NonBipartiteError
@@ -598,6 +605,44 @@ def build_parser() -> argparse.ArgumentParser:
     _add_neighbor_controls(make_defect)
     make_defect.add_argument("--json", dest="json_output")
     make_defect.set_defaults(func=_cmd_make_defect)
+
+    defect_spins = subparsers.add_parser(
+        "defect-spins",
+        help="enumerate vacancy spin candidates from electron counting (enumerate-compatible output)",
+    )
+    _add_input(defect_spins)
+    _add_structure_controls(defect_spins)
+    defect_spins.add_argument("--remove-atoms", required=True, help="one-based parent atoms to remove")
+    defect_spins.add_argument("--magnetic-species", nargs="+", required=True)
+    defect_spins.add_argument(
+        "--spin-file", required=True, help="pristine DM.InitSpin block/FDF whose pattern is inherited"
+    )
+    defect_spins.add_argument(
+        "--oxidation-states",
+        nargs="+",
+        required=True,
+        metavar="Element[@CN]=STATE",
+        help="pristine nominal states, e.g. Co@4=+2 Co@6=+3 (common anions default: O=-2)",
+    )
+    defect_spins.add_argument("--charge", type=int, default=0, help="defect charge state (removes carriers)")
+    defect_spins.add_argument(
+        "--schemes", default=",".join(SCHEMES), help="comma-separated: localized,split,delocalized"
+    )
+    defect_spins.add_argument(
+        "--spin-states", default="high", help="comma-separated: high, low (low applies to CN=6 only)"
+    )
+    defect_spins.add_argument(
+        "--new-moment-signs", choices=["both", "up", "down"], default="both",
+        help="sign variants for moments absent in the pristine state",
+    )
+    defect_spins.add_argument("--flip-changed", action="store_true", help="also write sign-flipped variants of changed atoms")
+    defect_spins.add_argument("--anion-species", nargs="+")
+    defect_spins.add_argument("--anion-cutoff", default="auto")
+    _add_neighbor_controls(defect_spins)
+    _add_site_comment_control(defect_spins)
+    defect_spins.add_argument("--output-dir", required=True)
+    defect_spins.add_argument("--structure-name", default="defect.fdf", help="defect structure file name (.fdf/.cif/.xyz)")
+    defect_spins.set_defaults(func=_cmd_defect_spins)
 
     validate = subparsers.add_parser("validate", help="validate a DM.InitSpin block")
     validate.add_argument("spin_file")
@@ -1314,6 +1359,57 @@ def _cmd_make_defect(args: argparse.Namespace) -> int:
 
     if args.json_output:
         _emit_json(payload, args.json_output)
+    return 0
+
+
+def _cmd_defect_spins(args: argparse.Namespace) -> int:
+    parent = _read_from_args(args)
+    remove = sorted(parse_atom_indices(args.remove_atoms))
+    if not remove:
+        raise ValueError("--remove-atoms must name at least one atom")
+    out_of_range = [index for index in remove if index > len(parent)]
+    if out_of_range:
+        raise ValueError(f"atom index to remove is out of range: {out_of_range[0]}")
+    parse_warnings: list[str] = []
+    rows = parse_dm_init_spin(args.spin_file, warnings=parse_warnings)
+    for warning in parse_warnings:
+        print(f"WARNING: {warning}", file=sys.stderr)
+    by_element, by_coordination = parse_oxidation_state_arguments(args.oxidation_states)
+    enumeration = enumerate_defect_spin_candidates(
+        parent,
+        [index - 1 for index in remove],
+        magnetic_species=args.magnetic_species,
+        parent_spin_rows=rows,
+        oxidation_by_element=by_element,
+        oxidation_by_coordination=by_coordination,
+        charge=args.charge,
+        schemes=[item for item in args.schemes.split(",") if item.strip()],
+        spin_states=[item for item in args.spin_states.split(",") if item.strip()],
+        new_moment_signs=args.new_moment_signs,
+        flip_changed=args.flip_changed,
+        anion_species=args.anion_species,
+        anion_cutoff=args.anion_cutoff,
+        cutoff=args.cutoff,
+    )
+    paths = write_defect_spin_candidates(
+        enumeration,
+        args.output_dir,
+        structure_name=args.structure_name,
+        site_comments=args.site_comments,
+        cutoff=args.cutoff,
+    )
+    print(format_defect_spin_summary(enumeration))
+    for notice in enumeration.notices:
+        print(f"NOTE: {notice}", file=sys.stderr)
+    print(
+        f"Wrote {len(enumeration.candidates)} candidate spin block(s), {paths['structure'].name}, "
+        f"{paths['index_map'].name}, manifest.csv, and candidates.json to {args.output_dir}"
+    )
+    print(
+        "Next: siesta-afm prepare-array <base_input_for_defect.fdf> --configs "
+        f"{args.output_dir} ... or prepare-cp2k-array {paths['structure']} --configs {args.output_dir} ...",
+        file=sys.stderr,
+    )
     return 0
 
 

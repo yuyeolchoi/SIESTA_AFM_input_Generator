@@ -426,6 +426,46 @@ spin 쪽 결과는 의도적으로 사용자에게 맡깁니다. O vacancy는 �
 결함 구조에서 `enumerate`, `prepare-array`, `collect-results`로 대안을 총에너지로
 비교해야 합니다. 후보 정렬은 구조적 기준일 뿐 결함 formation energy 순위가 아닙니다.
 
+### 전자 계수로 만드는 vacancy spin 후보
+
+`defect-spins`는 `make-defect`의 구조 보고를 실제로 계산할 초기 상태 후보로 바꿉니다.
+O²⁻를 제거하면 전자 2개가 격자에 남고, cation을 제거하면 hole이 남습니다. 이 명령은 그
+carrier를 vacancy 주변 자기 원자에 가능한 모든 방식으로 배정하고, 방식마다 `DM.InitSpin`
+블록 하나를 `enumerate`와 같은 디렉터리 구조로 써서 `prepare-array`와
+`prepare-cp2k-array`가 그대로 실행할 수 있게 합니다.
+
+```bash
+siesta-afm defect-spins examples/Co3O4_spinel_COD1538531.cif \
+  --remove-atoms 17 --magnetic-species Co --spin-file pristine_spin.fdf \
+  --oxidation-states Co@4=+2 Co@6=+3 --spin-states high,low \
+  --output-dir defect_O17_candidates
+
+siesta-afm prepare-cp2k-array defect_O17_candidates/defect.fdf \
+  --magnetic-species Co --configs defect_O17_candidates --output-dir cp2k_defect_jobs
+```
+
+입력은 원본 구조, 제거할 원자, 부호를 상속할 원본 spin 블록, 그리고 명목 산화수
+(`Element=+3` 또는 `Element@CN=+2`, 흔한 anion은 기본값 사용, `--charge`는 전하를 띤
+결함에서 carrier를 줄임)입니다. acceptor는 제거된 원자의 첫 shell 자기 원자이며, cation
+vacancy에서는 그 ligand를 공유하는 자기 원자입니다. carrier 배정 방식은 세 가지입니다.
+`localized`(모든 carrier를 한 acceptor에, 비동등 acceptor마다 후보 하나), `split`(acceptor
+하나에 carrier 하나씩, 비동등 조합마다 후보 하나), `delocalized`(균등 분배, 정수 상태
+사이를 보간한 moment는 장부 정리용). 새 산화수의 spin-only moment는 d 전자 수에서
+얻으며 기본은 고스핀이고 `--spin-states high,low`를 주면 저스핀도 씁니다. 저스핀은
+팔면체(CN=6) acceptor에만 적용합니다. 이미 있던 moment는 원본 부호와 값을 유지하고,
+비자성이던 원자에 새로 생기는 moment는 두 부호를 모두 씁니다(`--new-moment-signs
+up|down`으로 하나만). `--flip-changed`는 바뀐 원자의 부호를 뒤집은 변형을 추가합니다.
+동등한 acceptor는 원소, 배위수, 원본 부호, 원본 산화수로 묶고 다중도를 manifest에
+기록합니다.
+
+출력 디렉터리에는 `defect.fdf`(`--structure-name`으로 다른 형식 가능), `index_map.csv`,
+`afm_NNN.fdf` 블록들, `enumerate` 열에 `scheme`, `spin_state`, `sign_variant`,
+`acceptors`, `new_oxidation_states`, `multiplicity`를 더한 `manifest.csv`,
+`candidates.json`이 들어갑니다. d⁰에서 d¹⁰ 범위를 벗어나는 배정(예: Cu²⁺ 하나에 전자
+2개)은 알림과 함께 건너뛰고, 원본 moment를 완전히 없애는 후보(CuO의 O vacancy 옆
+Cu²⁺가 Cu⁺ d¹⁰이 되는 경우)가 있으면 알립니다. 이 열거는 어느 후보가 바닥상태인지
+예측하지 않습니다. 계산을 돌려 수렴된 총에너지와 최종 local moment로 비교해야 합니다.
+
 ## 총에너지로 여러 자기 상태 비교하기
 
 `make-input` + `enumerate` + `prepare-array` + `collect-results`를 조합하면 계산 조건은
@@ -838,4 +878,4 @@ GUI의 `by-coordination` 테이블에서 `use`는 이제 `(원소, CN)`별로 �
 python -m pytest
 ```
 
-테스트는 FDF/include/patch, 1D·square·triangle·분리 graph, slab PBC, layer clustering, ordering, 1-based writer, vacancy 자리 열거와 parent 인덱스 재매핑, CP2K kind별 writer, CP2K job array와 출력 parser, validation 오류 검출을 다룹니다.
+테스트는 FDF/include/patch, 1D·square·triangle·분리 graph, slab PBC, layer clustering, ordering, 1-based writer, vacancy 자리 열거와 parent 인덱스 재매핑, 전자 계수 기반 결함 spin 후보, CP2K kind별 writer, CP2K job array와 출력 parser, validation 오류 검출을 다룹니다.

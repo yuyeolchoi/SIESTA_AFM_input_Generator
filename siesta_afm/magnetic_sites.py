@@ -306,3 +306,97 @@ def guess_oxidation_states(structure: Structure) -> list[float]:
     guessed = pmg.copy()
     guessed.add_oxidation_state_by_guess()
     return [float(site.specie.oxi_state) for site in guessed]
+
+
+# Valence electron counts of the d-block (group number) used to convert a
+# nominal oxidation state into a d-electron count: d^n with n = group - state.
+D_BLOCK_GROUP: dict[str, int] = {
+    "Sc": 3, "Ti": 4, "V": 5, "Cr": 6, "Mn": 7, "Fe": 8, "Co": 9, "Ni": 10, "Cu": 11, "Zn": 12,
+    "Y": 3, "Zr": 4, "Nb": 5, "Mo": 6, "Tc": 7, "Ru": 8, "Rh": 9, "Pd": 10, "Ag": 11, "Cd": 12,
+    "Hf": 4, "Ta": 5, "W": 6, "Re": 7, "Os": 8, "Ir": 9, "Pt": 10, "Au": 11, "Hg": 12,
+}
+
+# Unpaired electrons of d^n in an octahedral field: high-spin (weak field) and
+# low-spin (strong field).  The low-spin values are the Oh ones; tetrahedral
+# sites are almost always high-spin.
+_HIGH_SPIN_UNPAIRED = (0, 1, 2, 3, 4, 5, 4, 3, 2, 1, 0)
+_LOW_SPIN_UNPAIRED = (0, 1, 2, 3, 2, 1, 0, 1, 2, 1, 0)
+
+# Nominal oxidation states of the common anions handled by the defect tools.
+DEFAULT_ANION_OXIDATION_STATES: dict[str, int] = {
+    "O": -2, "S": -2, "Se": -2, "Te": -2, "N": -3, "F": -1, "Cl": -1,
+}
+
+
+def d_electron_count(element: str, oxidation_state: float) -> float:
+    """Return the formal d-electron count for a d-block element and oxidation state."""
+
+    canonical = element.strip().capitalize()
+    if canonical not in D_BLOCK_GROUP:
+        raise ValueError(f"{element} is not a d-block element with a known group number")
+    count = D_BLOCK_GROUP[canonical] - float(oxidation_state)
+    if count < -1e-9 or count > 10 + 1e-9:
+        raise ValueError(
+            f"{canonical}{oxidation_state:+g} implies d^{count:g}, outside d^0..d^10"
+        )
+    return min(max(count, 0.0), 10.0)
+
+
+def spin_only_moment(
+    element: str, oxidation_state: float, spin_state: str = "high"
+) -> float:
+    """Return the spin-only moment (unpaired electrons, in μB) of a d^n ion.
+
+    ``spin_state`` is ``"high"`` or ``"low"``.  A non-integer oxidation state,
+    as produced by a delocalized-electron model, is interpolated linearly
+    between the two neighboring integer configurations; that is a bookkeeping
+    convenience, not a physical state.
+    """
+
+    state = spin_state.strip().lower()
+    if state not in {"high", "low"}:
+        raise ValueError("spin state must be 'high' or 'low'")
+    table = _HIGH_SPIN_UNPAIRED if state == "high" else _LOW_SPIN_UNPAIRED
+    count = d_electron_count(element, oxidation_state)
+    lower = int(count // 1)
+    fraction = count - lower
+    if fraction < 1e-9 or lower >= 10:
+        return float(table[min(lower, 10)])
+    return float(table[lower] * (1.0 - fraction) + table[lower + 1] * fraction)
+
+
+def parse_oxidation_state_arguments(
+    values: Sequence[str] | str,
+) -> tuple[dict[str, float], dict[tuple[str, int], float]]:
+    """Parse signed ``Element=+3`` and ``Element@CN=+2`` oxidation states."""
+
+    items = (
+        [item for item in values.replace(",", " ").split() if item]
+        if isinstance(values, str)
+        else [token for raw in values for token in str(raw).replace(",", " ").split()]
+    )
+    if not items:
+        raise ValueError("--oxidation-states requires at least one Element=value")
+    by_element: dict[str, float] = {}
+    by_coordination: dict[tuple[str, int], float] = {}
+    for item in items:
+        if "=" not in item:
+            raise ValueError(
+                f"invalid oxidation state specification {item!r}; use Element=+3 or Element@CN=+2"
+            )
+        key, value = item.split("=", 1)
+        key = key.strip()
+        try:
+            state = float(value)
+        except ValueError as exc:
+            raise ValueError(f"invalid oxidation state value in {item!r}") from exc
+        if "@" in key:
+            element, cn_text = key.split("@", 1)
+            if not element.strip() or not cn_text.isdigit():
+                raise ValueError(f"invalid oxidation state specification {item!r}")
+            by_coordination[(element.strip().lower(), int(cn_text))] = state
+        elif key:
+            by_element[key.lower()] = state
+        else:
+            raise ValueError(f"invalid oxidation state specification {item!r}")
+    return by_element, by_coordination
