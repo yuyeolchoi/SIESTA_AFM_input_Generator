@@ -519,6 +519,42 @@ SIESTA `.EIG`가 있으면 SCF k-mesh에서 표본화한 gap과 direct/indirect 
 `local_spins`는 파싱한 원자별 값을 보존하고, local-spin 절댓값의 평균/최솟값/최댓값 열은
 선택한 자기 원자를 요약합니다.
 
+### 같은 후보를 CP2K로 계산하기
+
+`prepare-cp2k-array`는 `enumerate` 출력 디렉터리를 CP2K 작업으로 바꾸고,
+`collect-results`는 CP2K와 SIESTA 폴더를 함께 읽습니다.
+
+```bash
+siesta-afm prepare-cp2k-array examples/Co3O4_spinel_COD1538531.cif \
+  --magnetic-species Co --configs afm_candidates --output-dir cp2k_jobs \
+  --hubbard-u Co=3.0 --ntasks 8 --walltime 04:00:00 --mem 40G
+
+# sbatch cp2k_jobs/run_cp2k_array.sbatch   (클러스터에서)
+
+siesta-afm collect-results cp2k_jobs
+```
+
+각 `<config_id>_<method>` 폴더에는 `make-cp2k-input` writer로 만든 `input.inp`가
+들어가고(그 명령의 옵션을 모두 받습니다), `folders.list`와 `cp2k_manifest.csv`에
+작업별 kind, `MULTIPLICITY`, `CHARGE`를 기록하며, `run_cp2k_array.sbatch`가 array task
+하나당 폴더 하나를 실행합니다. 스크립트는 검증된 CPU 빌드의 규칙을 따릅니다.
+`OMP_NUM_THREADS=1`과 core당 MPI rank 하나, NVHPC 경로 제거(`--keep-nvhpc`로 해제),
+module 대신 `--cp2k-env` 파일 source(`--module`로 module 빌드 지원), 실행 파일이
+`install/bin` 아래가 아니거나 `ldd`에 미해결 라이브러리가 있거나 NVHPC 라이브러리가
+잡히거나 `libmpi.so.40`이 둘 이상이면 시작을 거부하는 preflight, CP2K가 기존 출력
+파일에 덧붙이기 때문에 쓰는 작업별 출력 이름, 그리고 `exit_code` 파일입니다.
+`--time`과 `--mem`은 추정값으로 표시됩니다.
+
+`collect-results`는 `input.inp`로 CP2K 폴더를 인식하고(초기 spin은 `&KIND`의
+`MAGNETIZATION`과 `&COORD` kind에서 복원), 마지막 `PROGRAM STARTED AT` 이후 텍스트만
+읽으며, `ENERGY| Total FORCE_EVAL` 값을 eV로 바꿔 `total_energy`를 코드 간 비교 가능하게
+하고, 마지막 UKS Mulliken 표에서 원자별 spin을 읽고, inner/outer SCF 표시로
+`scf_converged`를 정합니다. `results.csv`에는 `code`(`siesta` 또는 `cp2k`)와 `notes`
+열이 추가되었습니다. `notes`에는 덧붙여진 run 수, abort, 그리고 `DFT+U energy
+contribution is negative` 경고 횟수가 기록되는데 이 경고는 잡음이 아니라 +U projection
+설정 실패의 신호입니다. OT 계산은 고유값을 출력하지 않으므로 band gap 열은
+`not-available-cp2k`가 됩니다. abort된 run은 `status=aborted`입니다.
+
 ## 재현 가능한 Hubbard-U 스크리닝
 
 검증된 자기 기준 상태는 유지하고 d-shell의 유효 U만 바꿀 때 `prepare-u-sweep`을
@@ -802,4 +838,4 @@ GUI의 `by-coordination` 테이블에서 `use`는 이제 `(원소, CN)`별로 �
 python -m pytest
 ```
 
-테스트는 FDF/include/patch, 1D·square·triangle·분리 graph, slab PBC, layer clustering, ordering, 1-based writer, vacancy 자리 열거와 parent 인덱스 재매핑, CP2K kind별 writer, validation 오류 검출을 다룹니다.
+테스트는 FDF/include/patch, 1D·square·triangle·분리 graph, slab PBC, layer clustering, ordering, 1-based writer, vacancy 자리 열거와 parent 인덱스 재매핑, CP2K kind별 writer, CP2K job array와 출력 parser, validation 오류 검출을 다룹니다.

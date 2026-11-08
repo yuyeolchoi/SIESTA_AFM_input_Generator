@@ -600,6 +600,46 @@ from the production build. `local_spins` preserves the parsed per-site values;
 the mean/minimum/maximum absolute local-spin columns summarize the selected
 magnetic sites.
 
+### Running the same candidates with CP2K
+
+`prepare-cp2k-array` turns an `enumerate` output directory into CP2K jobs, and
+`collect-results` reads CP2K and SIESTA folders alike:
+
+```bash
+siesta-afm prepare-cp2k-array examples/Co3O4_spinel_COD1538531.cif \
+  --magnetic-species Co --configs afm_candidates --output-dir cp2k_jobs \
+  --hubbard-u Co=3.0 --ntasks 8 --walltime 04:00:00 --mem 40G
+
+# sbatch cp2k_jobs/run_cp2k_array.sbatch   (on the cluster)
+
+siesta-afm collect-results cp2k_jobs
+```
+
+Each `<config_id>_<method>` folder receives an `input.inp` rendered with the
+`make-cp2k-input` writer (all of its options are accepted), `folders.list` and
+`cp2k_manifest.csv` record the kinds, `MULTIPLICITY`, and `CHARGE` of every
+job, and `run_cp2k_array.sbatch` runs one folder per array task. The script
+follows the conventions of a verified CPU build: `OMP_NUM_THREADS=1` with one
+MPI rank per core, NVHPC paths stripped (`--keep-nvhpc` to disable), the
+`--cp2k-env` file sourced instead of a module (`--module` for a module build),
+a preflight that refuses to start when the binary is not under `install/bin`,
+`ldd` reports unresolved libraries, NVHPC libraries resolve, or two
+`libmpi.so.40` are present, a per-job output name because CP2K appends to an
+existing output file, and an `exit_code` file. `--time` and `--mem` are
+labelled as estimates.
+
+`collect-results` detects a CP2K folder by its `input.inp` (initial spins are
+reconstructed from the `&KIND` `MAGNETIZATION` values and the `&COORD` kinds),
+reads only the text after the last `PROGRAM STARTED AT` banner, converts the
+`ENERGY| Total FORCE_EVAL` value to eV so `total_energy` is comparable across
+codes, takes per-atom spins from the last UKS Mulliken table, and sets
+`scf_converged` from the inner/outer SCF markers. Two columns were added to
+`results.csv`: `code` (`siesta` or `cp2k`) and `notes`, which records appended
+runs, aborts, and the number of `DFT+U energy contribution is negative`
+warnings, a sign of a failed +U projection rather than noise. Band-gap columns
+read `not-available-cp2k` because OT runs print no eigenvalues. A run that
+aborted gets `status=aborted`.
+
 ## Reproducible Hubbard-U screening
 
 Use `prepare-u-sweep` when the magnetic reference has already been validated
@@ -848,4 +888,4 @@ The tests cover FDF include/label/block redirection and flattened patching,
 literature-model screening, coordination-active spinel ordering, 1D / square /
 triangle / disconnected graphs, slab PBC, layer clustering, ordering, the
 one-based writer, vacancy-site enumeration with parent-index remapping, the CP2K
-per-kind writer, and validation error detection.
+per-kind writer, CP2K job arrays and output parsing, and validation error detection.

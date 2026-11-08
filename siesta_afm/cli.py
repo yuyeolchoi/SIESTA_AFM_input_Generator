@@ -16,6 +16,7 @@ from .afm_models import (
     get_afm_model,
     recommend_afm_models,
 )
+from .cp2k_jobs import prepare_cp2k_array
 from .cp2k_writer import render_cp2k_input
 from .defects import (
     apply_vacancies,
@@ -275,6 +276,117 @@ def _add_ordering_controls(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_cp2k_writer_controls(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--project-name")
+    parser.add_argument(
+        "--run-type",
+        choices=["ENERGY", "ENERGY_FORCE", "GEO_OPT", "CELL_OPT", "MD"],
+        default="ENERGY",
+    )
+    parser.add_argument("--basis-set", default="DZVP-MOLOPT-SR-GTH")
+    parser.add_argument("--basis-set-file", default="BASIS_MOLOPT")
+    parser.add_argument("--potential-file", default="GTH_POTENTIALS")
+    parser.add_argument(
+        "--potential",
+        nargs="+",
+        metavar="Element=GTH-PBE-qN",
+        help="override the default GTH potential name per element",
+    )
+    parser.add_argument("--cutoff-ry", type=float, default=600.0, help="MGRID CUTOFF in Ry")
+    parser.add_argument("--rel-cutoff", type=float, default=60.0)
+    parser.add_argument("--eps-scf", type=float, default=1.0e-6)
+    parser.add_argument("--max-scf", type=int, default=60)
+    parser.add_argument("--outer-max-scf", type=int, default=20)
+    parser.add_argument(
+        "--ot-minimizer", choices=["CG", "DIIS", "SD", "BROYDEN"], default="CG"
+    )
+    parser.add_argument(
+        "--no-dispersion", dest="dispersion", action="store_false", default=True,
+        help="omit the DFT-D3(BJ) correction",
+    )
+    parser.add_argument(
+        "--hubbard-u",
+        nargs="+",
+        help="CP2K U_MINUS_J per element in eV, e.g. Cu=6.0 or Co@4=3.0 Co@6=5.0 (no defaults)",
+    )
+    parser.add_argument(
+        "--plus-u-method",
+        choices=["MULLIKEN", "MULLIKEN_CHARGES", "LOWDIN"],
+        default="MULLIKEN",
+    )
+    parser.add_argument("--charge", type=int, default=0, help="total charge (e.g. charged defects)")
+    parser.add_argument(
+        "--no-magnetization-check",
+        dest="magnetization_check",
+        action="store_false",
+        default=True,
+        help="write MAGNETIZATION values the GTH atomic guess cannot polarize",
+    )
+
+
+def _cp2k_writer_kwargs(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "project_name": args.project_name,
+        "run_type": args.run_type,
+        "basis_set": args.basis_set,
+        "basis_set_file": args.basis_set_file,
+        "potential_file": args.potential_file,
+        "potentials": args.potential,
+        "cutoff": args.cutoff_ry,
+        "rel_cutoff": args.rel_cutoff,
+        "eps_scf": args.eps_scf,
+        "max_scf": args.max_scf,
+        "outer_max_scf": args.outer_max_scf,
+        "ot_minimizer": args.ot_minimizer,
+        "dispersion": args.dispersion,
+        "hubbard_u": args.hubbard_u,
+        "plus_u_method": args.plus_u_method,
+        "charge": args.charge,
+        "magnetization_check": args.magnetization_check,
+        "site_comments": args.site_comments,
+    }
+
+
+def _add_cp2k_job_controls(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--no-job-script", dest="job_script", action="store_false", default=True)
+    parser.add_argument("--job-name", default="cp2k_afm")
+    parser.add_argument("--partition", default="gpuq")
+    parser.add_argument("--ntasks", type=int, default=8)
+    parser.add_argument("--cpus-per-task", type=int, default=1)
+    parser.add_argument("--walltime", default="04:00:00")
+    parser.add_argument("--mem", help="SLURM --mem value, e.g. 40G (estimate)")
+    parser.add_argument("--max-concurrent", type=int)
+    parser.add_argument(
+        "--cp2k-env",
+        default="/scratch/9_CP2K/cp2k-2026.2/install/cp2k_env",
+        help="environment file sourced before running (pass --module instead for a module build)",
+    )
+    parser.add_argument("--module", help="module to load instead of sourcing --cp2k-env")
+    parser.add_argument("--cp2k-exe", default="cp2k.psmp")
+    parser.add_argument("--mpirun", default="/usr/bin/mpirun")
+    parser.add_argument(
+        "--keep-nvhpc", dest="strip_nvhpc", action="store_false", default=True,
+        help="do not strip NVHPC paths from PATH/LD_LIBRARY_PATH",
+    )
+
+
+def _cp2k_job_kwargs(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "job_name": args.job_name,
+        "partition": args.partition or None,
+        "ntasks": args.ntasks,
+        "cpus_per_task": args.cpus_per_task,
+        "walltime": args.walltime,
+        "memory": args.mem,
+        "max_concurrent": args.max_concurrent,
+        "cp2k_env": None if args.module else args.cp2k_env,
+        "module": args.module,
+        "cp2k_exe": args.cp2k_exe,
+        "mpirun": args.mpirun,
+        "strip_nvhpc": args.strip_nvhpc,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="siesta-afm",
@@ -388,51 +500,7 @@ def build_parser() -> argparse.ArgumentParser:
     make_cp2k.add_argument("--seed", type=int, default=0)
     make_cp2k.add_argument("--output")
     _add_site_comment_control(make_cp2k)
-    make_cp2k.add_argument("--project-name")
-    make_cp2k.add_argument(
-        "--run-type",
-        choices=["ENERGY", "ENERGY_FORCE", "GEO_OPT", "CELL_OPT", "MD"],
-        default="ENERGY",
-    )
-    make_cp2k.add_argument("--basis-set", default="DZVP-MOLOPT-SR-GTH")
-    make_cp2k.add_argument("--basis-set-file", default="BASIS_MOLOPT")
-    make_cp2k.add_argument("--potential-file", default="GTH_POTENTIALS")
-    make_cp2k.add_argument(
-        "--potential",
-        nargs="+",
-        metavar="Element=GTH-PBE-qN",
-        help="override the default GTH potential name per element",
-    )
-    make_cp2k.add_argument("--cutoff-ry", type=float, default=600.0, help="MGRID CUTOFF in Ry")
-    make_cp2k.add_argument("--rel-cutoff", type=float, default=60.0)
-    make_cp2k.add_argument("--eps-scf", type=float, default=1.0e-6)
-    make_cp2k.add_argument("--max-scf", type=int, default=60)
-    make_cp2k.add_argument("--outer-max-scf", type=int, default=20)
-    make_cp2k.add_argument(
-        "--ot-minimizer", choices=["CG", "DIIS", "SD", "BROYDEN"], default="CG"
-    )
-    make_cp2k.add_argument(
-        "--no-dispersion", dest="dispersion", action="store_false", default=True,
-        help="omit the DFT-D3(BJ) correction",
-    )
-    make_cp2k.add_argument(
-        "--hubbard-u",
-        nargs="+",
-        help="CP2K U_MINUS_J per element in eV, e.g. Cu=6.0 or Co@4=3.0 Co@6=5.0 (no defaults)",
-    )
-    make_cp2k.add_argument(
-        "--plus-u-method",
-        choices=["MULLIKEN", "MULLIKEN_CHARGES", "LOWDIN"],
-        default="MULLIKEN",
-    )
-    make_cp2k.add_argument("--charge", type=int, default=0, help="total charge (e.g. charged defects)")
-    make_cp2k.add_argument(
-        "--no-magnetization-check",
-        dest="magnetization_check",
-        action="store_false",
-        default=True,
-        help="write MAGNETIZATION values the GTH atomic guess cannot polarize",
-    )
+    _add_cp2k_writer_controls(make_cp2k)
     make_cp2k.set_defaults(func=_cmd_make_cp2k_input)
 
     analyze = subparsers.add_parser("analyze", help="analyze the magnetic graph")
@@ -630,6 +698,20 @@ def build_parser() -> argparse.ArgumentParser:
     array.add_argument("--template")
     array.add_argument("--output-dir", required=True)
     array.set_defaults(func=_cmd_prepare_array)
+
+    cp2k_array = subparsers.add_parser(
+        "prepare-cp2k-array",
+        help="write one CP2K input per enumerated spin file plus a SLURM array script",
+    )
+    _add_input(cp2k_array)
+    _add_structure_controls(cp2k_array)
+    cp2k_array.add_argument("--magnetic-species", nargs="+", required=True)
+    cp2k_array.add_argument("--configs", required=True, help="enumerate output directory")
+    cp2k_array.add_argument("--output-dir", required=True)
+    _add_site_comment_control(cp2k_array)
+    _add_cp2k_writer_controls(cp2k_array)
+    _add_cp2k_job_controls(cp2k_array)
+    cp2k_array.set_defaults(func=_cmd_prepare_cp2k_array)
 
     u_sweep = subparsers.add_parser(
         "prepare-u-sweep",
@@ -950,24 +1032,7 @@ def _cmd_make_cp2k_input(args: argparse.Namespace) -> int:
         magnetic_species=args.magnetic_species,
         metadata=metadata,
         angles=angles,
-        project_name=args.project_name,
-        run_type=args.run_type,
-        basis_set=args.basis_set,
-        basis_set_file=args.basis_set_file,
-        potential_file=args.potential_file,
-        potentials=args.potential,
-        cutoff=args.cutoff_ry,
-        rel_cutoff=args.rel_cutoff,
-        eps_scf=args.eps_scf,
-        max_scf=args.max_scf,
-        outer_max_scf=args.outer_max_scf,
-        ot_minimizer=args.ot_minimizer,
-        dispersion=args.dispersion,
-        hubbard_u=args.hubbard_u,
-        plus_u_method=args.plus_u_method,
-        charge=args.charge,
-        magnetization_check=args.magnetization_check,
-        site_comments=args.site_comments,
+        **_cp2k_writer_kwargs(args),
     )
     for warning in (*assignment_warnings, *result.warnings):
         print(f"WARNING:\n{warning}", file=sys.stderr)
@@ -1378,6 +1443,25 @@ def _cmd_prepare_array(args: argparse.Namespace) -> int:
         template=args.template,
     )
     print(f"Prepared {len(folders)} job folder(s) in {args.output_dir}")
+    return 0
+
+
+def _cmd_prepare_cp2k_array(args: argparse.Namespace) -> int:
+    structure = _read_from_args(args)
+    folders, warnings = prepare_cp2k_array(
+        structure,
+        args.configs,
+        args.output_dir,
+        magnetic_species=args.magnetic_species,
+        writer_options=_cp2k_writer_kwargs(args),
+        job_script=args.job_script,
+        job_options=_cp2k_job_kwargs(args),
+    )
+    for warning in warnings:
+        print(f"WARNING:\n{warning}", file=sys.stderr)
+    print(f"Prepared {len(folders)} CP2K job folder(s) in {args.output_dir}")
+    if args.job_script:
+        print(Path(args.output_dir) / "run_cp2k_array.sbatch")
     return 0
 
 

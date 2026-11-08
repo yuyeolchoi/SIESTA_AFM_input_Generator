@@ -1,0 +1,56 @@
+ DBCSR| CPU Multiplication driver                                           XSMM
+  **** **** ******  **  PROGRAM STARTED AT               2026-11-05 09:00:00.000
+ ***** ** ***  *** **   PROGRAM STARTED ON                                yuyeol
+ GLOBAL| Project name                                                    afm_001
+ GLOBAL| Run type                                                         ENERGY
+
+  Step     Update method      Time    Convergence         Total energy    Change
+  ------------------------------------------------------------------------------
+     1 OT CG       0.15E+00    1.2     0.00123456    -1234.100000000 -1.23E+03
+  *** SCF run NOT converged ***
+
+                     Mulliken Population Analysis
+
+ #  Atom  Element  Kind  Atomic population (alpha,beta) Net charge  Spin moment
+       1     Cu       1          5.900000      5.100000      -0.000000   0.800000
+       2     Cu       2          5.100000      5.900000      -0.000000  -0.800000
+       3     O        3          3.000000      3.000000       0.000000   0.000000
+ # Total charge and spin                 14.000000     14.000000       0.000000     0.000000
+
+ ENERGY| Total FORCE_EVAL ( QS ) energy [hartree]           -1234.100000000000
+
+ *******************************************************************************
+ * [ABORT]                                                                     *
+ *   SCF run NOT converged. To continue the calculation regardless, set        *
+ *   IGNORE_CONVERGENCE_FAILURE                                                *
+ *******************************************************************************
+  **** **** ******  **  PROGRAM STARTED AT               2026-11-05 10:00:00.000
+ ***** ** ***  *** **   PROGRAM STARTED ON                                yuyeol
+ GLOBAL| Project name                                                    afm_001
+ GLOBAL| Run type                                                         ENERGY
+
+  Step     Update method      Time    Convergence         Total energy    Change
+  ------------------------------------------------------------------------------
+     1 OT CG       0.15E+00    1.2     0.00123456    -1234.123456789 -1.23E+03
+     2 OT CG       0.15E+00    1.1     0.00000012    -1234.567890123 -4.44E-01
+  *** SCF run converged in     2 steps ***
+
+  outer SCF iter =    1 RMS gradient =   0.12E-06 energy =      -1234.5678901230
+  outer SCF loop converged in   1 iterations or    2 steps
+
+ WARNING in dft_plus_u.F:..  DFT+U energy contribution is negative, possibly due to unphysical Mulliken charges
+ WARNING in dft_plus_u.F:..  DFT+U energy contribution is negative, possibly due to unphysical Mulliken charges
+
+ !-----------------------------------------------------------------------------!
+                     Mulliken Population Analysis
+
+ #  Atom  Element  Kind  Atomic population (alpha,beta) Net charge  Spin moment
+       1     Cu       1          5.638563      5.363450      -0.002013   0.275113
+       2     Cu       2          5.363450      5.638563      -0.002013  -0.275113
+       3     O        3          3.428227      3.428227      -0.856454   0.000000
+ # Total charge and spin                 14.430240     14.430240      -0.860480     0.000000
+ !-----------------------------------------------------------------------------!
+
+ ENERGY| Total FORCE_EVAL ( QS ) energy [hartree]           -1234.567890123000
+
+  **** **** ******  **  PROGRAM ENDED AT                 2026-11-05 10:20:00.000

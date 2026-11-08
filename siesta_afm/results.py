@@ -1,4 +1,8 @@
-"""Prepare SIESTA job arrays and collect common magnetic result fields."""
+"""Prepare SIESTA job arrays and collect common magnetic result fields.
+
+``collect_results`` also understands CP2K job folders (an ``input.inp`` beside
+the output) and reports both codes in one table; energies are in eV for both.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +13,7 @@ import re
 import shutil
 from pathlib import Path
 
+from .cp2k_results import find_cp2k_input, parse_cp2k_initial_spins, parse_cp2k_output
 from .fdf_writer import patch_fdf_text
 from .io import parse_dm_init_spin, read_fdf_with_includes, read_structure
 
@@ -417,10 +422,15 @@ def collect_results(
             "species_labels": metadata.get("species_labels", ""),
         }
         initial_path = folder / "input.fdf"
-        initial_rows = (
-            parse_dm_init_spin(initial_path) if initial_path.is_file() else []
-        )
-        initial = {index: spin for index, spin in initial_rows}
+        cp2k_input = None if initial_path.is_file() else find_cp2k_input(folder)
+        code = "cp2k" if cp2k_input is not None else "siesta"
+        if cp2k_input is not None:
+            initial = parse_cp2k_initial_spins(cp2k_input)
+        else:
+            initial_rows = (
+                parse_dm_init_spin(initial_path) if initial_path.is_file() else []
+            )
+            initial = {index: spin for index, spin in initial_rows}
         exit_code, invalid_exit_code = _read_exit_code(folder)
         if exit_code is not None and exit_code != 0:
             failed_indices.append(array_index)
@@ -434,7 +444,9 @@ def collect_results(
                     "band_gap_ev": "",
                     "band_gap_type": "",
                     "band_gap_source": "",
-                    "band_gap_status": "missing-eig",
+                    "band_gap_status": (
+                        "not-available-cp2k" if code == "cp2k" else "missing-eig"
+                    ),
                     "band_gap_error": "",
                     "final_net_spin": "",
                     "local_spins": "",
@@ -454,11 +466,44 @@ def collect_results(
                         if exit_code not in {None, 0}
                         else "missing-output"
                     ),
+                    "code": code,
+                    "notes": "",
                 }
             )
             continue
         text = output.read_text(encoding="utf-8", errors="replace")
-        local, spin_source = parse_local_spins(text)
+        notes: list[str] = []
+        cp2k_aborted = False
+        if code == "cp2k":
+            summary = parse_cp2k_output(text)
+            local, spin_source = summary.local_spins, summary.spin_source
+            total_energy: float | None = summary.energy_ev
+            net_spin: float | None = summary.net_spin
+            scf = summary.scf_converged
+            geometry = summary.geometry_converged
+            notes = list(summary.notes)
+            cp2k_aborted = summary.aborted
+        else:
+            local, spin_source = parse_local_spins(text)
+            total_energy = _last_float(_ENERGY_PATTERNS, text)
+            net_spin = _last_float(_NET_SPIN_PATTERNS, text)
+            lower = text.lower()
+            scf = any(
+                marker in lower
+                for marker in (
+                    "scf cycle converged",
+                    "scf converged",
+                    "scf convergence achieved",
+                )
+            )
+            geometry = any(
+                marker in lower
+                for marker in (
+                    "geometry converged",
+                    "geom. converged",
+                    "optimization converged",
+                )
+            )
         comparable = [
             index for index in initial if index in local and initial[index] != 0
         ]
@@ -498,23 +543,6 @@ def collect_results(
             index: local[index] for index in target_indices if index in local
         }
         target_absolute = [abs(value) for value in target_local.values()]
-        lower = text.lower()
-        scf = any(
-            marker in lower
-            for marker in (
-                "scf cycle converged",
-                "scf converged",
-                "scf convergence achieved",
-            )
-        )
-        geometry = any(
-            marker in lower
-            for marker in (
-                "geometry converged",
-                "geom. converged",
-                "optimization converged",
-            )
-        )
         expected_local = {index for index, value in initial.items() if value != 0}
         matched_local = expected_local & local.keys()
         if not local:
@@ -529,9 +557,11 @@ def collect_results(
             status = "invalid-exit-code"
         elif exit_code not in {None, 0}:
             status = "run-failed"
-        eig_path = _find_eig(folder)
+        elif cp2k_aborted and status in {"ok", "not-converged"}:
+            status = "aborted"
+        eig_path = None if code == "cp2k" else _find_eig(folder)
         band_gap: BandGapResult | None = None
-        band_gap_status = "missing-eig"
+        band_gap_status = "not-available-cp2k" if code == "cp2k" else "missing-eig"
         band_gap_error = ""
         if eig_path is not None:
             try:
@@ -543,13 +573,13 @@ def collect_results(
         results.append(
             {
                 **shared,
-                "total_energy": _last_float(_ENERGY_PATTERNS, text),
+                "total_energy": total_energy,
                 "band_gap_ev": band_gap.gap_ev if band_gap else "",
                 "band_gap_type": band_gap.kind if band_gap else "",
                 "band_gap_source": eig_path.name if eig_path else "",
                 "band_gap_status": band_gap_status,
                 "band_gap_error": band_gap_error,
-                "final_net_spin": _last_float(_NET_SPIN_PATTERNS, text),
+                "final_net_spin": net_spin,
                 "local_spins": " ".join(
                     f"{index}:{value:.12g}"
                     for index, value in target_local.items()
@@ -568,6 +598,8 @@ def collect_results(
                 "scf_converged": scf,
                 "geometry_converged": geometry,
                 "status": status,
+                "code": code,
+                "notes": "; ".join(notes),
             }
         )
     destination = Path(output_csv) if output_csv else root / "results.csv"
@@ -595,6 +627,8 @@ def collect_results(
         "scf_converged",
         "geometry_converged",
         "status",
+        "code",
+        "notes",
     ]
     with destination.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)

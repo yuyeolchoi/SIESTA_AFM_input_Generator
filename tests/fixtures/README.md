@@ -28,3 +28,10 @@ It is a software fixture, not a chemically complete catalyst model.
 `NiCo2O4_311_pristine.cif` is a 252-atom relaxed slab regression structure used
 to preserve the observed Co/Ni layer-parity warning and surface coordination
 distributions from a real non-orthogonal NiCo2O4 (311) calculation.
+
+`cp2k_uks_appended_runs.out` is a minimized CP2K Quickstep UKS output with two
+appended runs in one file (the first aborted at an unconverged SCF, the second
+converged): CP2K appends to an existing `-o` file, so parsers must read only
+the text after the last `PROGRAM STARTED AT` banner. It keeps the `ENERGY|`
+line, the UKS Mulliken table with its spin-moment column, the inner/outer SCF
+markers, and the `DFT+U energy contribution is negative` warning.
